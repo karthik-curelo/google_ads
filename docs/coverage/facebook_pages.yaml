@@ -1,0 +1,31 @@
+source: facebook_pages
+connector_id: facebook_pages
+generated: 2026-09-07
+has_connector: true
+refresh: "hand-maintained from Pages API / Page Insights reference; pin to META_API_VERSION"
+review_by: 2026-12-01
+verified_in_db: false   # flipped by tests/test_coverage_reaches_db.py
+sections:
+  resources:
+    "page": implemented
+    "posts": implemented
+    "page_insights": implemented
+    "post_insights": implemented
+  page_insight_metrics:
+    "page_impressions": implemented
+    "page_impressions_unique": implemented
+    "page_post_engagements": implemented
+    "page_fans": implemented
+    "page_fan_adds": implemented
+    "page_fan_removes": implemented
+    "page_views_total": implemented
+    "page_video_views": implemented
+  post_insight_metrics:
+    "post_impressions": implemented
+    "post_impressions_unique": implemented
+    "post_clicks": implemented
+    "post_reactions_by_type_total": implemented
+    "post_video_views": implemented
+tally:
+  implemented: 17
+coverage_pct: 100

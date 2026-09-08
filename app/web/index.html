@@ -1,0 +1,1755 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marketing Connectors</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          },
+          colors: {
+            gray: {
+              900: '#111827',
+              950: '#030712',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    
+    /* Animations */
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    
+    /* Progress bar transition */
+    .progress-bar-fill { transition: width 0.4s ease-out; }
+    
+    /* Glassmorphism utilities */
+    .glass { background: rgba(17, 24, 39, 0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    
+    /* Hide scrollbar for sidebar but allow scroll */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* Stunning live processing animations */
+    @keyframes liveGlow {
+      0%, 100% { 
+        box-shadow: 0 0 20px rgba(99, 102, 241, 0.35), 0 0 40px rgba(168, 85, 247, 0.15); 
+        border-color: rgba(99, 102, 241, 0.85); 
+      }
+      50% { 
+        box-shadow: 0 0 35px rgba(56, 189, 248, 0.5), 0 0 60px rgba(99, 102, 241, 0.25); 
+        border-color: rgba(56, 189, 248, 0.95); 
+      }
+    }
+    .processing-live-card {
+      animation: liveGlow 2.5s infinite alternate ease-in-out;
+    }
+
+    @keyframes shimmerMove {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
+    .shimmer-bar {
+      position: relative;
+      overflow: hidden;
+    }
+    .shimmer-bar::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; bottom: 0; right: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+      animation: shimmerMove 1.5s infinite;
+    }
+
+    @keyframes beaconPulse {
+      0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7); }
+      70% { transform: scale(1.05); box-shadow: 0 0 0 8px rgba(34, 211, 238, 0); }
+      100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
+    }
+    .beacon-dot {
+      animation: beaconPulse 1.8s infinite;
+    }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 font-sans h-screen flex overflow-hidden antialiased">
+
+  <!-- Sidebar -->
+  <aside class="w-64 bg-gray-900 border-r border-white/5 flex flex-col justify-between h-full relative z-10 shadow-xl">
+    <div>
+      <div class="h-16 flex items-center px-6 border-b border-white/5">
+        <i data-lucide="layers" class="text-indigo-500 mr-3"></i>
+        <h1 class="text-white font-semibold text-lg tracking-tight">Connectors</h1>
+      </div>
+      
+      <nav class="p-4 space-y-1">
+        <button onclick="switchTab('dashboard')" id="tab-dashboard" class="w-full flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors bg-indigo-500/10 text-indigo-400 group">
+          <i data-lucide="layout-dashboard" class="mr-3 h-5 w-5"></i>
+          Dashboard
+        </button>
+        <button onclick="switchTab('accounts')" id="tab-accounts" class="w-full flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors text-gray-400 hover:bg-white/5 hover:text-gray-200 group">
+          <i data-lucide="users" class="mr-3 h-5 w-5"></i>
+          Accounts
+        </button>
+        <button onclick="switchTab('catalog')" id="tab-catalog" class="w-full flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors text-gray-400 hover:bg-white/5 hover:text-gray-200 group">
+          <i data-lucide="blocks" class="mr-3 h-5 w-5"></i>
+          Catalog
+        </button>
+      </nav>
+    </div>
+
+    <!-- Auth / Token Status -->
+    <div class="p-4 border-t border-white/5">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Authentication</span>
+        <span id="who" class="text-xs font-medium text-indigo-400">checking...</span>
+      </div>
+      <div class="relative">
+        <input id="token" type="password" placeholder="API bearer token" class="w-full bg-gray-950 border border-white/10 rounded-md py-1.5 pl-3 pr-8 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all text-gray-300 placeholder-gray-600" />
+        <button onclick="saveToken()" class="absolute right-1 top-1 p-1 text-gray-400 hover:text-indigo-400 transition-colors" title="Save Token">
+          <i data-lucide="save" class="h-4 w-4"></i>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="flex-1 flex flex-col relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-900 via-gray-950 to-gray-950">
+    
+    <!-- Top Header -->
+    <header class="h-16 flex items-center justify-between px-8 border-b border-white/5 glass z-10 absolute top-0 w-full">
+      <h2 id="page-title" class="text-xl font-semibold text-white">Dashboard</h2>
+      <div class="flex items-center gap-3">
+        <!-- Optional global actions could go here -->
+      </div>
+    </header>
+
+    <!-- Scrollable Content Area -->
+    <div class="flex-1 overflow-y-auto mt-16 p-8 no-scrollbar relative z-0">
+      
+      <!-- Dashboard Tab -->
+      <section id="view-dashboard" class="fade-in block space-y-8">
+        
+        <!-- STEP-BY-STEP DATA PROCESSING HUB -->
+        <div class="bg-gray-900 border border-white/10 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
+          <!-- Background accent glow -->
+          <div class="absolute -right-20 -top-20 w-80 h-80 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+          <!-- Top Step 1: Account Selection Dropdown -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-white/5">
+            <div>
+              <div class="flex items-center gap-2.5">
+                <span class="inline-flex items-center justify-center h-6 w-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold ring-1 ring-indigo-500/30">1</span>
+                <h3 class="text-base font-semibold text-white">Select Connected Account</h3>
+              </div>
+              <p class="text-xs text-gray-400 mt-1 pl-8">Pick your authenticated account to browse available services and process linked properties.</p>
+            </div>
+            
+            <div class="flex items-center gap-3 min-w-[300px] sm:w-auto">
+              <div class="relative flex-1">
+                <select id="hub-account-select" onchange="onAccountSelected(this.value)" class="w-full bg-gray-950 border border-white/10 rounded-xl px-4 py-2.5 pr-10 text-sm font-medium text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all appearance-none cursor-pointer">
+                  <option value="">-- Choose Connected Account --</option>
+                </select>
+                <i data-lucide="chevron-down" class="h-4 w-4 text-gray-400 absolute right-3.5 top-3.5 pointer-events-none"></i>
+              </div>
+              <button onclick="switchTab('catalog')" class="py-2.5 px-3.5 bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium rounded-xl border border-white/10 flex items-center gap-1.5 transition-colors shrink-0" title="Connect a new provider account">
+                <i data-lucide="plus" class="h-4 w-4 text-indigo-400"></i> New Account
+              </button>
+            </div>
+          </div>
+
+          <!-- Step 2: Available Services for Selected Account -->
+          <div id="hub-services-section" class="py-6 border-b border-white/5 hidden">
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-2.5">
+                <span class="inline-flex items-center justify-center h-6 w-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold ring-1 ring-indigo-500/30">2</span>
+                <h4 class="text-sm font-semibold text-gray-200">Available Services</h4>
+              </div>
+              <span id="hub-services-provider-badge" class="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-white/5 text-gray-400 border border-white/5"></span>
+            </div>
+            <div id="hub-services-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <!-- Service cards injected dynamically -->
+            </div>
+          </div>
+
+          <!-- Step 3: Linked Properties & Projects List -->
+          <div id="hub-properties-section" class="pt-6 hidden">
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-2.5">
+                <span class="inline-flex items-center justify-center h-6 w-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold ring-1 ring-indigo-500/30">3</span>
+                <h4 id="hub-properties-title" class="text-sm font-semibold text-gray-200">Linked Properties & Projects</h4>
+              </div>
+              <span id="hub-properties-count" class="text-xs text-gray-400"></span>
+            </div>
+
+            <!-- Live API Sync Status Banner with Rate-Limit Safeguards -->
+            <div id="hub-api-sync-banner" class="mb-4 p-3.5 bg-gradient-to-r from-gray-950 via-indigo-950/20 to-gray-950 border border-white/10 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+              <div class="flex items-center gap-3">
+                <div class="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                  <i data-lucide="zap" class="h-4 w-4 text-emerald-400"></i>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-semibold text-gray-200" id="api-sync-headline">Live API Sync Active</span>
+                    <span id="api-sync-badge" class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Connected</span>
+                  </div>
+                  <p class="text-gray-400 text-[11px] mt-0.5" id="api-sync-subtext">Actively synchronizing new ad interactions, impressions, and conversions with rate-limit protection.</p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 shrink-0 self-start md:self-auto">
+                <button id="btn-service-sync-now" onclick="forceSyncCurrentService()" class="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 hover:text-white rounded-lg text-xs font-semibold border border-indigo-500/30 flex items-center gap-1.5 transition-all active:scale-95">
+                  <i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i> Sync From API Now
+                </button>
+              </div>
+            </div>
+
+            <!-- Discovered Properties Container -->
+            <div id="hub-properties-list" class="space-y-3">
+              <!-- Injected dynamically -->
+            </div>
+          </div>
+
+          <!-- Empty state when no accounts exist -->
+          <div id="hub-empty-state" class="py-12 text-center text-gray-500 text-sm">
+            <i data-lucide="shield-alert" class="h-10 w-10 mx-auto mb-3 text-gray-600"></i>
+            <p class="text-gray-300 font-medium">No Accounts Connected Yet</p>
+            <p class="text-gray-500 text-xs mt-1 mb-4">Connect a Google or Meta account to explore services and ingest marketing data.</p>
+            <button onclick="switchTab('catalog')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-all shadow-lg shadow-indigo-500/20 inline-flex items-center gap-2">
+              <i data-lucide="plus" class="h-3.5 w-3.5"></i> Connect Account in Catalog
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Section: Active Pipelines / Data Processors -->
+        <div>
+          <div class="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2.5">
+                <h3 id="pipelines-heading-title" class="text-gray-200 text-sm font-semibold">Active Ingestion Pipelines</h3>
+                <span id="pipelines-count-badge" class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"></span>
+              </div>
+              <p id="pipelines-heading-subtitle" class="text-gray-500 text-xs mt-0.5">Real-time status, synchronization progress, and warehouse tables.</p>
+            </div>
+            
+            <!-- Quick Filter Toggle -->
+            <div class="flex items-center gap-1.5 bg-gray-950/80 border border-white/10 p-1 rounded-xl self-start sm:self-auto text-xs">
+              <button id="filter-btn-account" onclick="setPipelineFilter('account')" class="px-3 py-1.5 rounded-lg font-medium transition-all bg-indigo-600 text-white shadow-sm">
+                Selected Account
+              </button>
+              <button id="filter-btn-service" onclick="setPipelineFilter('service')" class="px-3 py-1.5 rounded-lg font-medium text-gray-400 hover:text-gray-200 transition-all">
+                This Service
+              </button>
+              <button id="filter-btn-all" onclick="setPipelineFilter('all')" class="px-3 py-1.5 rounded-lg font-medium text-gray-400 hover:text-gray-200 transition-all">
+                All Pipelines
+              </button>
+            </div>
+          </div>
+          <div id="connections" class="grid grid-cols-1 xl:grid-cols-2 gap-6"></div>
+        </div>
+
+      </section>
+
+      <!-- Accounts Tab (Identities) -->
+      <section id="view-accounts" class="fade-in hidden">
+        <div class="mb-6">
+          <h3 class="text-gray-400 text-sm font-medium mb-1">Connected Identities</h3>
+          <p class="text-gray-500 text-xs">Manage OAuth connections and discover available resources.</p>
+        </div>
+        <div id="identities" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"></div>
+      </section>
+
+      <!-- Catalog Tab (Integrations) -->
+      <section id="view-catalog" class="fade-in hidden">
+        <div class="mb-6">
+          <h3 class="text-gray-400 text-sm font-medium mb-1">Integration Catalog</h3>
+          <p class="text-gray-500 text-xs">Connect new data sources to your platform.</p>
+        </div>
+        <div id="integrations" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"></div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Detail Modal (used for runs) -->
+  <div id="detail-modal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeDetail()"></div>
+    <div class="absolute right-0 top-0 bottom-0 w-full max-w-2xl bg-gray-900 border-l border-white/10 shadow-2xl flex flex-col transform transition-transform translate-x-full" id="detail-panel">
+      <div class="flex items-center justify-between p-4 border-b border-white/5">
+        <h3 class="text-lg font-medium text-white flex items-center">
+          <i data-lucide="terminal" class="h-5 w-5 mr-2 text-gray-400"></i> Details
+        </h3>
+        <button onclick="closeDetail()" class="text-gray-400 hover:text-white transition-colors p-1">
+          <i data-lucide="x" class="h-5 w-5"></i>
+        </button>
+      </div>
+      <div class="flex-1 overflow-auto p-4">
+        <pre id="detailBody" class="text-xs font-mono text-gray-300 bg-gray-950 p-4 rounded-lg border border-white/5 overflow-x-auto"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Warehouse Data Explorer Modal -->
+  <div id="explorer-modal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/80 backdrop-blur-md" onclick="closeExplorer()"></div>
+    <div class="absolute right-0 top-0 bottom-0 w-full max-w-6xl bg-gray-950 border-l border-white/10 shadow-2xl flex flex-col transform transition-transform translate-x-full" id="explorer-panel">
+      <!-- Header -->
+      <div class="flex items-center justify-between p-5 border-b border-white/5 bg-gray-900">
+        <div class="flex items-center gap-4">
+          <div id="explorer-icon-container" class="h-10 w-10 rounded-xl bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
+            <i data-lucide="database" class="h-5 w-5 text-indigo-400"></i>
+          </div>
+          <div>
+            <h3 id="explorer-title" class="text-xl font-bold text-white tracking-tight">Data Explorer</h3>
+            <div class="flex items-center gap-2 text-xs font-medium mt-0.5">
+              <span id="explorer-table-badge" class="px-2 py-0.5 rounded text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 font-mono">table_name</span>
+              <span class="text-gray-500">&bull;</span>
+              <span id="explorer-row-count" class="text-gray-400">0 rows</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="relative">
+            <i data-lucide="search" class="absolute left-3 top-2.5 h-4 w-4 text-gray-500"></i>
+            <input type="text" id="explorer-search" onkeyup="filterExplorerTable()" placeholder="Search data..." class="bg-gray-950 border border-white/10 rounded-lg py-2 pl-9 pr-4 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-gray-200 placeholder-gray-600 w-64 transition-all">
+          </div>
+          
+          <div class="bg-gray-900 border border-white/10 rounded-lg p-1 flex">
+            <button onclick="setExplorerView('table')" id="btn-view-table" class="px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 text-white shadow-sm transition-colors flex items-center gap-1.5">
+              <i data-lucide="table" class="h-3.5 w-3.5"></i> Table
+            </button>
+            <button onclick="setExplorerView('json')" id="btn-view-json" class="px-3 py-1.5 text-xs font-medium rounded-md text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1.5 hover:bg-white/5">
+              <i data-lucide="braces" class="h-3.5 w-3.5"></i> JSON
+            </button>
+          </div>
+
+          <button onclick="exportToCSV()" class="px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2">
+            <i data-lucide="download" class="h-4 w-4"></i> Export CSV
+          </button>
+          <div class="w-px h-8 bg-white/10 mx-1"></div>
+          <button onclick="closeExplorer()" class="text-gray-400 hover:text-white transition-colors p-2 rounded-lg hover:bg-white/5">
+            <i data-lucide="x" class="h-5 w-5"></i>
+          </button>
+        </div>
+      </div>
+      
+      <!-- Content -->
+      <div class="flex-1 overflow-hidden flex flex-col bg-gray-950">
+        <!-- Table View -->
+        <div id="explorer-table-container" class="flex-1 overflow-auto">
+          <table class="w-full text-left border-collapse" id="explorer-table">
+            <thead class="bg-gray-900 sticky top-0 z-10 border-b border-white/10 shadow-sm">
+              <tr id="explorer-thead-tr">
+                <!-- Injected columns -->
+              </tr>
+            </thead>
+            <tbody id="explorer-tbody" class="divide-y divide-white/5 text-sm">
+              <!-- Injected rows -->
+            </tbody>
+          </table>
+        </div>
+        
+        <!-- JSON View -->
+        <div id="explorer-json-container" class="flex-1 overflow-auto p-6 hidden">
+          <pre id="explorer-json-body" class="text-xs font-mono text-gray-300 bg-gray-900 p-6 rounded-xl border border-white/5 overflow-x-auto shadow-inner"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // Initialize Lucide icons
+  lucide.createIcons();
+
+  // Tab Switching Logic
+  const views = ['dashboard', 'accounts', 'catalog'];
+  function switchTab(tabId) {
+    views.forEach(v => {
+      document.getElementById('view-' + v).classList.add('hidden');
+      document.getElementById('view-' + v).classList.remove('block');
+      
+      const btn = document.getElementById('tab-' + v);
+      if(v === tabId) {
+        btn.classList.add('bg-indigo-500/10', 'text-indigo-400');
+        btn.classList.remove('text-gray-400', 'hover:bg-white/5', 'hover:text-gray-200');
+      } else {
+        btn.classList.remove('bg-indigo-500/10', 'text-indigo-400');
+        btn.classList.add('text-gray-400', 'hover:bg-white/5', 'hover:text-gray-200');
+      }
+    });
+    document.getElementById('view-' + tabId).classList.remove('hidden');
+    document.getElementById('view-' + tabId).classList.add('block');
+    
+    const titles = { 'dashboard': 'Dashboard', 'accounts': 'Accounts', 'catalog': 'Integration Catalog' };
+    document.getElementById('page-title').textContent = titles[tabId];
+  }
+
+  // Modal Logic
+  function showDetail(obj) {
+    const modal = document.getElementById('detail-modal');
+    const panel = document.getElementById('detail-panel');
+    document.getElementById('detailBody').textContent = JSON.stringify(obj, null, 2);
+    
+    modal.classList.remove('hidden');
+    // slight delay to allow display:block to apply before transforming
+    setTimeout(() => {
+      panel.classList.remove('translate-x-full');
+    }, 10);
+  }
+  function closeDetail() {
+    const modal = document.getElementById('detail-modal');
+    const panel = document.getElementById('detail-panel');
+    panel.classList.add('translate-x-full');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+    }, 300); // match transition duration if added, or just hide
+  }
+
+
+  // ORIGINAL LOGIC WITH REFACTORED DOM UPDATES
+  const $ = (s, r=document) => r.querySelector(s);
+  let TOKEN = localStorage.getItem("mc_token") || "";
+  $("#token").value = TOKEN;
+
+  function saveToken(){ TOKEN = $("#token").value.trim(); localStorage.setItem("mc_token", TOKEN); refresh(); }
+
+  async function api(path, opts={}){
+    const res = await fetch("/api/v1"+path, {
+      ...opts,
+      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+TOKEN, ...(opts.headers||{}) },
+    });
+    const text = await res.text();
+    const body = text ? JSON.parse(text) : null;
+    if(!res.ok) throw new Error((body && (body.detail?.message || body.error?.message || JSON.stringify(body.detail||body))) || res.statusText);
+    return body;
+  }
+
+  function getStatusColor(status) {
+    const s = (status || "").toLowerCase();
+    if(s === 'healthy' || s === 'succeeded' || s === 'ok') return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20';
+    if(s === 'error' || s === 'needs_reauth' || s === 'permission_denied' || s === 'failed') return 'text-rose-400 bg-rose-400/10 border-rose-400/20';
+    if(s === 'syncing' || s === 'pending' || s === 'rate_limited' || s === 'partial_success') return 'text-amber-400 bg-amber-400/10 border-amber-400/20';
+    return 'text-gray-400 bg-gray-400/10 border-gray-400/20';
+  }
+
+  function pill(status){ 
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-medium border ${getStatusColor(status)}">${status||"—"}</span>`; 
+  }
+  
+  function statusDot(status) {
+    const s = (status || "").toLowerCase();
+    let color = 'bg-gray-500';
+    if(s === 'healthy' || s === 'succeeded' || s === 'ok') color = 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+    else if(s === 'error' || s === 'needs_reauth' || s === 'permission_denied' || s === 'failed') color = 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]';
+    else if(s === 'syncing' || s === 'pending' || s === 'rate_limited' || s === 'partial_success') color = 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]';
+    return `<div class="w-2 h-2 rounded-full ${color}"></div>`;
+  }
+
+  function when(v){ return v ? new Date(v).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : "—"; }
+  function timeAgo(dateStr){
+    if(!dateStr) return "Never synced";
+    const sec = Math.max(0, Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000));
+    if(sec < 45) return "Just now";
+    if(sec < 90) return "1m ago";
+    if(sec < 3600) return `${Math.floor(sec/60)}m ago`;
+    if(sec < 86400) return `${Math.floor(sec/3600)}h ago`;
+    return `${Math.floor(sec/86400)}d ago`;
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const isTerminal = s => ["succeeded","failed","partial_success","cancelled"].includes(s);
+  const cap = s => s ? s[0].toUpperCase() + s.slice(1).replace(/_/g," ") : "";
+  const nf = n => (n == null ? 0 : n).toLocaleString();
+  window._runSummary = window._runSummary || {};
+  window._polling = window._polling || new Set();
+  window._connectionProgress = window._connectionProgress || {};
+  window._recentlyFinished = window._recentlyFinished || {};
+  window._discoveredCache = window._discoveredCache || {};
+
+  window._selectedIdentityId = null;
+  window._selectedConnectorId = null;
+  window._pipelineFilter = 'account'; // 'account', 'service', or 'all'
+  window._identities = [];
+  window._connections = [];
+  window._integrations = [];
+
+  function setPipelineFilter(mode){
+    window._pipelineFilter = mode;
+    ['account', 'service', 'all'].forEach(m => {
+      const btn = $(`#filter-btn-${m}`);
+      if(btn){
+        if(m === mode){
+          btn.className = "px-3 py-1.5 rounded-lg font-medium transition-all bg-indigo-600 text-white shadow-sm";
+        } else {
+          btn.className = "px-3 py-1.5 rounded-lg font-medium text-gray-400 hover:text-gray-200 transition-all";
+        }
+      }
+    });
+    loadConnections();
+  }
+
+  function escapeQuote(s){
+    return (s || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
+  }
+
+  async function refresh(){
+    if(!TOKEN){ 
+      $("#who").textContent = "Missing Token"; 
+      $("#who").className = "text-xs font-medium text-amber-400";
+      return; 
+    }
+    try{
+      const [intRes, idRes, connRes] = await Promise.all([
+        api("/integrations"), 
+        api("/identities"), 
+        api("/connections")
+      ]);
+      window._integrations = intRes.integrations || [];
+      window._identities = idRes || [];
+      window._connections = connRes.connections || [];
+
+      $("#who").textContent = "Authenticated";
+      $("#who").className = "text-xs font-medium text-emerald-400";
+
+      renderHub();
+      loadIntegrations();
+      loadIdentities();
+      loadConnections();
+      setTimeout(() => lucide.createIcons(), 50);
+    }catch(e){ 
+      $("#who").textContent = "Auth Error";
+      $("#who").className = "text-xs font-medium text-rose-400";
+      console.error(e);
+    }
+  }
+
+  // --- STEP-BY-STEP DATA PROCESSING HUB LOGIC ---
+  const serviceMeta = {
+    google_analytics: {
+      name: "Google Analytics 4",
+      desc: "Web & app traffic, sessions, user actions, and e-commerce conversions",
+      icon: "bar-chart-2",
+      type: "Analytics"
+    },
+    google_ads: {
+      name: "Google Ads",
+      desc: "Campaigns, ad groups, keyword performance, conversions, and ad spend",
+      icon: "target",
+      type: "Advertising"
+    },
+    google_search_console: {
+      name: "Search Console",
+      desc: "Organic search queries, site impressions, CTR, and search performance",
+      icon: "globe",
+      type: "SEO"
+    },
+    meta_ads: {
+      name: "Meta Ads",
+      desc: "Facebook & Instagram ad campaigns, ad sets, spend, and ROAS",
+      icon: "share-2",
+      type: "Advertising"
+    },
+    instagram_insights: {
+      name: "Instagram Insights",
+      desc: "Business profile reach, story views, follower demographics, and media metrics",
+      icon: "instagram",
+      type: "Social"
+    }
+  };
+
+  function renderHub(){
+    const select = $("#hub-account-select");
+    const emptyState = $("#hub-empty-state");
+    const servicesSec = $("#hub-services-section");
+    const propsSec = $("#hub-properties-section");
+
+    if(!window._identities || window._identities.length === 0){
+      select.innerHTML = `<option value="">-- No Connected Accounts --</option>`;
+      emptyState.classList.remove("hidden");
+      servicesSec.classList.add("hidden");
+      propsSec.classList.add("hidden");
+      return;
+    }
+
+    emptyState.classList.add("hidden");
+
+    // Populate dropdown
+    const optionsHtml = window._identities.map(id => {
+      const label = `[${id.provider.toUpperCase()}] ${id.email || id.display_name || 'Account #' + id.id}`;
+      return `<option value="${id.id}">${label}</option>`;
+    }).join("");
+
+    select.innerHTML = optionsHtml;
+
+    // Check if current selection is valid
+    const valid = window._identities.some(id => id.id === window._selectedIdentityId);
+    if(!valid){
+      window._selectedIdentityId = window._identities[0].id;
+    }
+    select.value = window._selectedIdentityId;
+
+    renderServicesForAccount(window._selectedIdentityId);
+  }
+
+  function onAccountSelected(idVal){
+    if(!idVal) return;
+    window._selectedIdentityId = parseInt(idVal);
+    window._selectedConnectorId = null;
+    renderServicesForAccount(window._selectedIdentityId);
+    loadConnections();
+  }
+
+  function renderServicesForAccount(identityId){
+    const idObj = (window._identities || []).find(i => i.id === identityId);
+    if(!idObj) return;
+
+    const servicesSec = $("#hub-services-section");
+    servicesSec.classList.remove("hidden");
+    $("#hub-services-provider-badge").textContent = idObj.provider;
+
+    const availableConnectors = connectorsForProvider(idObj.provider);
+    if(!window._selectedConnectorId || !availableConnectors.includes(window._selectedConnectorId)){
+      window._selectedConnectorId = availableConnectors[0];
+    }
+
+    const grid = $("#hub-services-grid");
+    grid.innerHTML = availableConnectors.map(cId => {
+      const meta = serviceMeta[cId] || { name: cId, desc: "Data connector", icon: "plug", type: "Data" };
+      const isSelected = cId === window._selectedConnectorId;
+      const activeCount = (window._connections || []).filter(c => c.identity_id === identityId && c.connector_id === cId).length;
+
+      return `
+        <div onclick="onServiceSelected('${cId}')" class="cursor-pointer rounded-xl p-4 transition-all border ${isSelected ? 'border-indigo-500 bg-indigo-500/10 shadow-lg shadow-indigo-500/10 ring-1 ring-indigo-500' : 'border-white/5 bg-gray-950/60 hover:border-white/10 hover:bg-gray-950'} flex flex-col justify-between group">
+          <div>
+            <div class="flex items-start justify-between mb-3">
+              <div class="h-9 w-9 rounded-lg ${isSelected ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/30' : 'bg-gray-900 border border-white/5 text-gray-400 group-hover:text-indigo-400'} flex items-center justify-center transition-colors">
+                <i data-lucide="${meta.icon}" class="h-4.5 w-4.5"></i>
+              </div>
+              ${activeCount > 0 
+                ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1"><i data-lucide="check" class="h-3 w-3"></i> ${activeCount} Active</span>`
+                : `<span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/5 text-gray-400 border border-white/5">Available</span>`
+              }
+            </div>
+            <h5 class="text-sm font-semibold ${isSelected ? 'text-white' : 'text-gray-200'} mb-1">${meta.name}</h5>
+            <p class="text-xs text-gray-400 leading-relaxed mb-3">${meta.desc}</p>
+          </div>
+          <div class="pt-2 border-t ${isSelected ? 'border-indigo-500/20' : 'border-white/5'} flex items-center justify-between text-[11px] ${isSelected ? 'text-indigo-400 font-semibold' : 'text-gray-500'}">
+            <span>${meta.type}</span>
+            <span class="flex items-center gap-1">${isSelected ? 'Selected' : 'Click to select'} &rarr;</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    setTimeout(() => lucide.createIcons(), 20);
+    onServiceSelected(window._selectedConnectorId);
+  }
+
+  const RATE_LIMIT_COOLDOWN_SEC = 45;
+  let _autoSyncTimer = null;
+
+  function onServiceSelected(connectorId){
+    window._selectedConnectorId = connectorId;
+    const availableConnectors = connectorsForProvider($("#hub-services-provider-badge").textContent.toLowerCase());
+    
+    // Update active highlight classes in grid
+    const grid = $("#hub-services-grid");
+    if(grid){
+      Array.from(grid.children).forEach((el, idx) => {
+        const cId = availableConnectors[idx];
+        if(cId === connectorId){
+          el.className = "cursor-pointer rounded-xl p-4 transition-all border border-indigo-500 bg-indigo-500/10 shadow-lg shadow-indigo-500/10 ring-1 ring-indigo-500 flex flex-col justify-between group";
+        } else {
+          el.className = "cursor-pointer rounded-xl p-4 transition-all border border-white/5 bg-gray-950/60 hover:border-white/10 hover:bg-gray-950 flex flex-col justify-between group";
+        }
+      });
+    }
+
+    const propsSec = $("#hub-properties-section");
+    propsSec.classList.remove("hidden");
+
+    const meta = serviceMeta[connectorId] || { name: connectorId };
+    $("#hub-properties-title").textContent = `Linked Properties & Projects (${meta.name})`;
+
+    // 1. Immediately render discovered properties & active pipelines
+    loadLinkedProperties(window._selectedIdentityId, connectorId);
+    loadConnections();
+
+    // 2. Actively sync with provider API for fresh interactions with rate-limit protection
+    triggerServiceAutoSync(window._selectedIdentityId, connectorId);
+
+    // 3. Periodic refresh (every 60s) to keep interaction metrics fresh while viewing this service
+    if(_autoSyncTimer) clearInterval(_autoSyncTimer);
+    _autoSyncTimer = setInterval(() => {
+      if(window._selectedIdentityId && window._selectedConnectorId === connectorId && !document.hidden){
+        triggerServiceAutoSync(window._selectedIdentityId, connectorId);
+      }
+    }, 60000);
+  }
+
+  async function triggerServiceAutoSync(identityId, connectorId, force = false){
+    const headline = $("#api-sync-headline");
+    const badge = $("#api-sync-badge");
+    const subtext = $("#api-sync-subtext");
+    const btn = $("#btn-service-sync-now");
+
+    const conns = (window._connections || []).filter(c => 
+      c.identity_id === identityId && c.connector_id === connectorId
+    );
+
+    if(!conns.length){
+      if(headline) headline.textContent = "API Ready";
+      if(badge) {
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span> Discovered`;
+        badge.className = "px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1";
+      }
+      if(subtext) subtext.textContent = "Discovered properties ready. Click 'Run' on any property to launch the pipeline.";
+      if(btn) btn.disabled = true;
+      return;
+    }
+
+    if(btn) btn.disabled = false;
+
+    // Check if any connection is currently running
+    const currentlySyncing = conns.some(c => 
+      c.status === 'syncing' || c.status === 'pending' || window._activeSyncConnId === c.id || window._polling.has(c.id)
+    );
+
+    if(currentlySyncing){
+      if(headline) headline.textContent = "Syncing with API in Realtime...";
+      if(badge) {
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-cyan-400 beacon-dot"></span> In Progress`;
+        badge.className = "px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1";
+      }
+      if(subtext) subtext.textContent = "Actively fetching and streaming latest ad interactions and conversions into warehouse.";
+      return;
+    }
+
+    const now = Date.now();
+    const connsToSync = conns.filter(c => {
+      if(force) return true;
+      const lastRun = c.last_run_at ? new Date(c.last_run_at).getTime() : 0;
+      const elapsedSec = Math.round((now - lastRun) / 1000);
+      return elapsedSec >= RATE_LIMIT_COOLDOWN_SEC || !c.last_run_at;
+    });
+
+    if(!connsToSync.length){
+      const mostRecentRun = Math.max(...conns.map(c => c.last_run_at ? new Date(c.last_run_at).getTime() : 0));
+      const elapsed = Math.round((now - mostRecentRun) / 1000);
+      const remaining = Math.max(1, RATE_LIMIT_COOLDOWN_SEC - elapsed);
+
+      if(headline) headline.textContent = "Data Up To Date";
+      if(badge) {
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Synced ${elapsed}s ago`;
+        badge.className = "px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1";
+      }
+      if(subtext) subtext.textContent = `Latest ad interactions are fresh. Cooldown active (${remaining}s) to carefully protect provider API quotas.`;
+      return;
+    }
+
+    // Actively synchronize connections with staggered delay to protect rate limits
+    if(headline) headline.textContent = "Actively Fetching from API…";
+    if(badge) {
+      badge.innerHTML = `<i data-lucide="loader-2" class="h-3 w-3 animate-spin text-cyan-400"></i> Fetching`;
+      badge.className = "px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 flex items-center gap-1";
+    }
+    if(subtext) subtext.textContent = `Fetching newest date slices and interaction events from provider API in incremental mode...`;
+    lucide.createIcons();
+
+    for(let i = 0; i < connsToSync.length; i++){
+      const c = connsToSync[i];
+      if(i > 0) await sleep(2000); // 2-second stagger to respect rate limits
+
+      let prevRunId = null;
+      try {
+        const cBefore = await api(`/connections/${c.id}`);
+        if(cBefore?.latest_run) prevRunId = cBefore.latest_run.id;
+      } catch(e){}
+
+      window._activeSyncConnId = c.id;
+      delete window._recentlyFinished[c.id];
+      window._connectionProgress[c.id] = {
+        pct: 12,
+        phase: "Fetching API",
+        desc: "Fetching newest ad interactions from provider API…",
+        rows: c.total_records_synced || 0,
+        isFinished: false
+      };
+
+      try {
+        await api(`/connections/${c.id}/sync?sync_mode=incremental`, { method: "POST" });
+      } catch(e) {
+        console.warn(`Auto sync note for ${c.id}:`, e);
+      }
+
+      loadLinkedProperties(identityId, connectorId);
+      loadConnections();
+      pollRun(c.id, prevRunId);
+    }
+  }
+
+  async function forceSyncCurrentService(){
+    if(!window._selectedIdentityId || !window._selectedConnectorId) return;
+    const btn = $("#btn-service-sync-now");
+    if(btn) {
+      btn.innerHTML = `<i data-lucide="loader-2" class="h-3.5 w-3.5 animate-spin"></i> Syncing…`;
+      btn.disabled = true;
+      lucide.createIcons();
+    }
+    await triggerServiceAutoSync(window._selectedIdentityId, window._selectedConnectorId, true);
+    setTimeout(() => {
+      if(btn){
+        btn.innerHTML = `<i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i> Sync From API Now`;
+        btn.disabled = false;
+        lucide.createIcons();
+      }
+    }, 3000);
+  }
+
+  async function loadLinkedProperties(identityId, connectorId, forceRefresh = false){
+    const container = $("#hub-properties-list");
+    const countBadge = $("#hub-properties-count");
+
+    const cacheKey = `${identityId}:${connectorId}`;
+    if(!forceRefresh && window._discoveredCache && window._discoveredCache[cacheKey]){
+      renderPropertiesList(window._discoveredCache[cacheKey], identityId, connectorId);
+      // Background check to catch any new properties/campaigns without blocking
+      api("/connections/discover", {
+        method: "POST",
+        body: JSON.stringify({ connector_id: connectorId, identity_id: identityId })
+      }).then(({ resources }) => {
+        if(resources && resources.length){
+          window._discoveredCache[cacheKey] = resources;
+          renderPropertiesList(resources, identityId, connectorId);
+        }
+      }).catch(()=>{});
+      return;
+    }
+
+    countBadge.textContent = "Discovering...";
+    container.innerHTML = `
+      <div class="py-12 flex flex-col items-center justify-center text-gray-400 text-xs bg-gray-950/40 rounded-xl border border-white/5">
+        <i data-lucide="loader-2" class="h-6 w-6 animate-spin text-indigo-400 mb-2"></i>
+        <span>Querying provider API for linked accounts, properties & projects...</span>
+      </div>
+    `;
+    setTimeout(() => lucide.createIcons(), 10);
+
+    try {
+      const { resources } = await api("/connections/discover", {
+        method: "POST",
+        body: JSON.stringify({ connector_id: connectorId, identity_id: identityId })
+      });
+
+      const list = resources || [];
+      window._discoveredCache[cacheKey] = list;
+      renderPropertiesList(list, identityId, connectorId);
+    } catch(err) {
+      countBadge.textContent = "Error";
+      container.innerHTML = `
+        <div class="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-300 text-xs flex items-start gap-3">
+          <i data-lucide="alert-circle" class="h-4 w-4 text-rose-400 shrink-0 mt-0.5"></i>
+          <div>
+            <p class="font-semibold text-rose-200">Unable to query properties</p>
+            <p class="text-rose-300/80 mt-1">${err.message}</p>
+          </div>
+        </div>
+      `;
+      setTimeout(() => lucide.createIcons(), 10);
+    }
+  }
+
+  function renderPropertiesList(list, identityId, connectorId){
+    const container = $("#hub-properties-list");
+    const countBadge = $("#hub-properties-count");
+    countBadge.textContent = `${list.length} available`;
+
+    if(list.length === 0){
+      container.innerHTML = `
+        <div class="py-10 text-center bg-gray-950/40 rounded-xl border border-white/5 text-gray-400 text-xs">
+          <i data-lucide="info" class="h-6 w-6 mx-auto mb-2 text-gray-500"></i>
+          <p class="font-medium text-gray-300">No properties or projects discovered.</p>
+          <p class="text-gray-500 mt-1">Make sure your authenticated account has permissions inside this service.</p>
+        </div>
+      `;
+      setTimeout(() => lucide.createIcons(), 10);
+      return;
+    }
+
+    container.innerHTML = list.map(r => {
+      const existing = (window._connections || []).find(c => 
+        c.identity_id === identityId && 
+        c.connector_id === connectorId && 
+        c.resource_id === r.resource_id
+      );
+
+      const savedProg = existing ? window._connectionProgress[existing.id] : null;
+      const isRunning = existing && (
+        existing.status === 'syncing' || 
+        existing.status === 'pending' || 
+        window._activeSyncConnId === existing.id ||
+        (savedProg && !savedProg.isFinished && savedProg.pct < 100)
+      );
+
+      const safeId = `${identityId}-${r.resource_id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+      if(isRunning) {
+        const curPct = savedProg ? savedProg.pct : 10;
+        const curPhase = savedProg?.phase || cap(existing.status_detail || existing.status || "Syncing");
+        const curRows = savedProg?.rows ? nf(savedProg.rows) + " rows" : nf(existing.total_records_synced) + " rows";
+        const curDesc = savedProg?.desc || "Initializing synchronization pipeline...";
+
+        return `
+          <div id="prop-card-${existing.id}" class="processing-live-card bg-gradient-to-r from-gray-900 via-indigo-950/40 to-gray-900 border border-indigo-500 rounded-xl p-5 shadow-2xl relative overflow-hidden transition-all">
+            <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-cyan-400 via-indigo-500 to-fuchsia-500"></div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <div class="flex items-center gap-3">
+                <div class="h-10 w-10 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shrink-0 relative">
+                  <i data-lucide="zap" class="h-5 w-5 text-indigo-400 animate-bounce"></i>
+                  <span class="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+                  </span>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h5 class="text-sm font-bold text-white tracking-tight truncate">${r.name}</h5>
+                    <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center gap-1.5 shadow-sm">
+                      <span class="w-2 h-2 rounded-full bg-cyan-400 beacon-dot"></span> Processing Live
+                    </span>
+                  </div>
+                  <p class="text-xs text-indigo-300/70 font-mono mt-0.5">${r.resource_id} &bull; <span class="capitalize">${r.resource_type || "Property"}</span></p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 bg-gray-950/80 border border-white/10 rounded-lg px-3 py-1.5 self-start sm:self-auto">
+                <div class="text-right">
+                  <div class="text-[10px] text-gray-400 uppercase tracking-wider">Processed</div>
+                  <div class="text-xs font-bold text-cyan-400 font-mono" id="prop-rows-${existing.id}">
+                    ${curRows}
+                  </div>
+                </div>
+                <div class="h-6 w-px bg-white/10"></div>
+                <div class="text-right">
+                  <div class="text-[10px] text-gray-400 uppercase tracking-wider">Status</div>
+                  <div class="text-xs font-bold text-indigo-400 uppercase" id="prop-phase-${existing.id}">
+                    ${curPhase}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- High-Tech Shimmer Neon Progress Bar -->
+            <div class="mb-3">
+              <div class="flex justify-between items-center text-xs mb-1.5">
+                <span class="text-xs text-gray-300 flex items-center gap-1.5" id="prop-desc-${existing.id}">
+                  <i data-lucide="loader-2" class="h-3.5 w-3.5 animate-spin text-indigo-400"></i>
+                  <span>${curDesc}</span>
+                </span>
+                <span class="text-xs font-mono font-bold text-cyan-300" id="prop-pct-${existing.id}">${curPct}%</span>
+              </div>
+              <div class="h-2.5 w-full bg-gray-950 rounded-full overflow-hidden border border-indigo-500/30 p-0.5">
+                <div id="prop-bar-${existing.id}" class="h-full rounded-full bg-gradient-to-r from-cyan-400 via-indigo-500 to-fuchsia-500 progress-bar-fill shimmer-bar shadow-[0_0_15px_rgba(99,102,241,0.8)]" style="width: ${curPct}%"></div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between text-xs pt-2 border-t border-white/5">
+              <span class="text-gray-500 text-[11px] flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Streaming to database warehouse
+              </span>
+              <div class="flex gap-2">
+                <button onclick="showData(${existing.id})" class="text-gray-400 hover:text-indigo-300 flex items-center gap-1 py-1 px-2.5 rounded bg-white/5 hover:bg-white/10 transition-colors">
+                  <i data-lucide="database" class="h-3 w-3"></i> View Data
+                </button>
+                <button onclick="showRuns(${existing.id})" class="text-gray-400 hover:text-indigo-300 flex items-center gap-1 py-1 px-2.5 rounded bg-white/5 hover:bg-white/10 transition-colors">
+                  <i data-lucide="file-text" class="h-3 w-3"></i> View Logs
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      // --- REMAINING STATE: CLEAR, CRISP "RUN" BUTTON ---
+      return `
+        <div class="bg-gray-950/70 border border-white/5 hover:border-white/15 rounded-xl p-4 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 group">
+          
+          <div class="flex items-center gap-3.5 flex-1 min-w-0">
+            <div class="h-10 w-10 rounded-lg bg-gray-900 border border-white/5 text-gray-400 flex items-center justify-center shrink-0 group-hover:text-indigo-400 transition-colors">
+              <i data-lucide="${existing ? 'check-circle-2' : 'folder-git-2'}" class="h-5 w-5 ${existing ? 'text-emerald-400' : ''}"></i>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 mb-0.5">
+                <h5 class="text-sm font-semibold text-gray-200 truncate" title="${r.name}">${r.name}</h5>
+                ${existing ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-medium ${existing.status === 'succeeded' || existing.status === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-gray-800 text-gray-400'}">${existing.status === 'succeeded' || existing.status === 'ok' ? 'Ready &bull; Synced' : existing.status}</span>` : ''}
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                <span class="font-mono text-[11px] text-gray-400">${r.resource_id}</span>
+                <span>&bull;</span>
+                <span class="capitalize">${r.resource_type || "Property"}</span>
+                ${existing ? `<span>&bull;</span><span class="text-gray-400 font-medium">${nf(existing.total_records_synced)} records</span><span>&bull;</span><span class="text-indigo-400/90 font-mono text-[11px] flex items-center gap-1"><i data-lucide="clock" class="h-3 w-3"></i> ${timeAgo(existing.last_run_at || existing.last_success_at)}</span>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <!-- Action column: UNAMBIGUOUS "RUN" BUTTON -->
+          <div class="flex items-center gap-2 shrink-0">
+            ${existing ? `
+              <button onclick="showData(${existing.id})" class="px-3 py-2 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 rounded-lg text-xs font-medium border border-white/5 transition-colors flex items-center gap-1" title="Inspect warehouse data">
+                <i data-lucide="database" class="h-3.5 w-3.5"></i> Data
+              </button>
+              <button onclick="showRuns(${existing.id})" class="px-3 py-2 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 rounded-lg text-xs font-medium border border-white/5 transition-colors flex items-center gap-1" title="View execution logs">
+                <i data-lucide="file-text" class="h-3.5 w-3.5"></i> Logs
+              </button>
+              <button onclick="handleRunClick(${identityId}, '${connectorId}', '${r.resource_id}', '${escapeQuote(r.name)}', ${existing.id})" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-md shadow-indigo-500/20 transition-all flex items-center gap-1.5 active:scale-95">
+                <i data-lucide="play" class="h-3.5 w-3.5 fill-current"></i> Run
+              </button>
+            ` : `
+              ${r.selectable !== false ? `
+                <button id="btn-proc-${safeId}" onclick="handleRunClick(${identityId}, '${connectorId}', '${r.resource_id}', '${escapeQuote(r.name)}', null)" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-md shadow-indigo-500/20 transition-all flex items-center gap-1.5 active:scale-95">
+                  <i data-lucide="play" class="h-3.5 w-3.5 fill-current"></i> Run
+                </button>
+              ` : `
+                <span class="text-xs text-amber-400/80 bg-amber-400/10 border border-amber-400/20 px-3 py-1.5 rounded-lg">${r.unsupported_reason || "Unavailable"}</span>
+              `}
+            `}
+          </div>
+
+        </div>
+      `;
+    }).join("");
+
+    setTimeout(() => lucide.createIcons(), 20);
+  }
+
+  async function handleRunClick(identityId, connectorId, resourceId, resourceName, existingConnId){
+    let connId = existingConnId;
+    if(!connId){
+      try {
+        const conn = await api("/connections", {
+          method: "POST",
+          body: JSON.stringify({
+            connector_id: connectorId,
+            identity_id: parseInt(identityId),
+            resource_id: resourceId,
+            name: resourceName || resourceId,
+            backfill_days: 30,
+            schedule_interval_seconds: 86400
+          })
+        });
+        connId = conn.id;
+      } catch(err) {
+        const { connections } = await api("/connections");
+        const existing = (connections || []).find(c => c.connector_id === connectorId && c.resource_id === resourceId);
+        if(existing){
+          connId = existing.id;
+        } else {
+          alert("Failed to initialize pipeline: " + err.message);
+          return;
+        }
+      }
+    }
+
+    window._activeSyncConnId = connId;
+    delete window._recentlyFinished[connId];
+    window._connectionProgress[connId] = {
+      pct: 8,
+      phase: "Starting",
+      desc: "Starting synchronization pipeline…",
+      rows: 0,
+      isFinished: false
+    };
+
+    // Update connection status locally
+    const foundConn = (window._connections || []).find(c => c.id === connId);
+    if(foundConn) {
+      foundConn.status = 'syncing';
+    }
+
+    // Instantly reflect live processing state without any network delay
+    loadLinkedProperties(identityId, connectorId);
+    loadConnections();
+
+    // Query previous run ID before starting sync to prevent stale finished run detection
+    let prevRunId = null;
+    try {
+      const cBefore = await api(`/connections/${connId}`);
+      if(cBefore?.latest_run) prevRunId = cBefore.latest_run.id;
+    } catch(e){}
+
+    // Trigger sync
+    try {
+      await api(`/connections/${connId}/sync`, { method: "POST" });
+    } catch(e) {
+      console.warn("Sync start note:", e);
+    }
+
+    // Refresh connections in background to sync state from DB
+    api("/connections").then(res => {
+      window._connections = res.connections || [];
+      loadConnections();
+    }).catch(()=>{});
+
+    // Start live polling with prevRunId
+    pollRun(connId, prevRunId);
+  }
+
+  async function loadIntegrations(){
+    const { integrations } = await api("/integrations");
+    const container = $("#integrations");
+    if(integrations.length === 0) {
+      container.innerHTML = `<div class="col-span-full text-center py-12 text-gray-500">No integrations available.</div>`;
+      return;
+    }
+
+    const iconMap = {
+      'google': 'chrome',
+      'meta': 'facebook'
+    };
+
+    container.innerHTML = integrations.map(i => {
+      const icon = iconMap[i.provider] || 'plug';
+      const isConnected = window._identities && window._identities.some(id => id.provider === i.provider);
+      
+      return `
+      <div class="bg-gray-900 border border-white/5 rounded-xl p-5 hover:border-white/10 transition-colors flex flex-col group">
+        <div class="flex justify-between items-start mb-4">
+          <div class="h-10 w-10 rounded-lg bg-gray-800 border border-white/5 flex items-center justify-center text-gray-400 group-hover:text-indigo-400 transition-colors">
+            <i data-lucide="${icon}" class="h-5 w-5"></i>
+          </div>
+          <div class="flex gap-2">
+            ${isConnected ? pill('connected') : ''}
+            ${!i.available ? pill('unavailable') : ''}
+          </div>
+        </div>
+        <h3 class="text-base font-semibold text-gray-200 mb-1">${i.name}</h3>
+        <div class="text-xs text-gray-500 mb-4 flex items-center gap-2">
+          <span class="uppercase tracking-wider">${i.provider}</span>
+          <span>&bull;</span>
+          <span>${i.streams.length} streams</span>
+        </div>
+        
+        <div class="flex-1 text-sm text-gray-400 space-y-2 mb-6">
+          ${i.unavailable_reason ? `<p class="text-amber-400/80 text-xs">${i.unavailable_reason}</p>` : ""}
+          ${(i.prerequisites||[]).map(p=>`<div class="flex items-start"><i data-lucide="check" class="h-4 w-4 text-emerald-500 mr-2 shrink-0 mt-0.5"></i> <span class="text-xs leading-relaxed">${p}</span></div>`).join("")}
+          ${(i.caveats||[]).map(p=>`<div class="flex items-start"><i data-lucide="alert-triangle" class="h-4 w-4 text-amber-500 mr-2 shrink-0 mt-0.5"></i> <span class="text-xs leading-relaxed text-amber-200/60">${p}</span></div>`).join("")}
+        </div>
+
+        <button ${i.available ? "" : "disabled"} onclick="connect('${i.connector_id}')" class="w-full py-2 px-4 bg-white/5 hover:bg-white/10 text-gray-300 text-sm font-medium rounded-lg transition-colors border border-white/5 disabled:opacity-50 disabled:cursor-not-allowed">
+          ${isConnected ? "Connect Another Account" : "Connect Account"}
+        </button>
+      </div>`;
+    }).join("");
+  }
+
+  async function connect(connectorId){
+    const { authorization_url } = await api(`/integrations/${connectorId}/connect`, {
+      method:"POST",
+      body: JSON.stringify({ redirect_after: location.origin + "/" }),
+    });
+    location.href = authorization_url;
+  }
+
+  async function loadIdentities(){
+    const identities = await api("/identities");
+    window._identities = identities;
+    const container = $("#identities");
+    
+    if(!identities.length) {
+      container.innerHTML = `
+        <div class="col-span-full flex flex-col items-center justify-center py-16 border border-dashed border-white/10 rounded-xl bg-white/[0.02]">
+          <i data-lucide="users" class="h-8 w-8 text-gray-500 mb-3"></i>
+          <p class="text-gray-400 text-sm">No accounts connected yet.</p>
+          <button onclick="switchTab('catalog')" class="mt-4 text-indigo-400 hover:text-indigo-300 text-sm font-medium">Browse Catalog &rarr;</button>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = identities.map(id => `
+      <div class="bg-gray-900 border border-white/5 rounded-xl p-5 hover:border-white/10 transition-colors">
+        <div class="flex justify-between items-start mb-3">
+          <div class="flex items-center gap-3">
+            <div class="h-8 w-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 border border-white/5">
+              <i data-lucide="user" class="h-4 w-4"></i>
+            </div>
+            <div>
+              <h3 class="text-sm font-medium text-gray-200 truncate w-32 md:w-48" title="${id.email || id.display_name || 'account '+id.id}">${id.email || id.display_name || "Account "+id.id}</h3>
+              <p class="text-xs text-gray-500 uppercase tracking-wider">${id.provider}</p>
+            </div>
+          </div>
+          ${pill(id.status)}
+        </div>
+        
+        <div class="text-xs text-gray-500 mb-4 flex items-center gap-2">
+          <i data-lucide="key" class="h-3 w-3"></i> ${(id.scopes||[]).length} scopes granted
+        </div>
+        
+        ${id.status_detail ? `<p class="text-xs text-rose-400 bg-rose-400/10 p-2 rounded-md mb-4">${id.status_detail}</p>` : ""}
+        
+        <div class="border-t border-white/5 pt-4 mt-2">
+          <button onclick="disconnect(${id.id})" class="w-full py-1.5 flex items-center justify-center gap-2 text-xs text-gray-400 hover:text-rose-400 transition-colors">
+            <i data-lucide="trash-2" class="h-3 w-3"></i> Disconnect Account
+          </button>
+        </div>
+      </div>`).join("");
+  }
+
+  function connectorsForProvider(p){
+    const map = { google:["google_analytics","google_ads","google_search_console"], meta:["meta_ads","instagram_insights"] };
+    return map[p] || [];
+  }
+
+  async function disconnect(id){
+    if(!confirm("Disconnect this account? Connections using it will stop syncing.")) return;
+    await api(`/identities/${id}`, { method:"DELETE" });
+    refresh();
+  }
+
+  async function loadConnections(){
+    const { connections } = await api("/connections");
+    window._connections = connections || [];
+    const container = $("#connections");
+    const countBadge = $("#pipelines-count-badge");
+    const headingTitle = $("#pipelines-heading-title");
+    const headingSubtitle = $("#pipelines-heading-subtitle");
+    
+    // Determine selected account identity and service meta for contextual header
+    const currentIdObj = (window._identities || []).find(i => i.id === window._selectedIdentityId);
+    const idLabel = currentIdObj ? (currentIdObj.email || currentIdObj.display_name || 'Account #' + currentIdObj.id) : "Selected Account";
+    const currentServiceMeta = serviceMeta[window._selectedConnectorId] || { name: window._selectedConnectorId || "Service" };
+
+    // Apply filtering based on window._pipelineFilter
+    let filtered = [...(connections || [])];
+    if (window._pipelineFilter === 'account' && window._selectedIdentityId) {
+      filtered = filtered.filter(c => c.identity_id === window._selectedIdentityId);
+      if(headingTitle) headingTitle.textContent = `Pipelines for ${idLabel}`;
+      if(headingSubtitle) headingSubtitle.textContent = `Showing active pipelines linked to this authenticated account.`;
+    } else if (window._pipelineFilter === 'service' && window._selectedIdentityId && window._selectedConnectorId) {
+      filtered = filtered.filter(c => c.identity_id === window._selectedIdentityId && c.connector_id === window._selectedConnectorId);
+      if(headingTitle) headingTitle.textContent = `${currentServiceMeta.name} Pipelines`;
+      if(headingSubtitle) headingSubtitle.textContent = `Showing pipelines for ${currentServiceMeta.name} on ${idLabel}.`;
+    } else {
+      if(headingTitle) headingTitle.textContent = `All Ingestion Pipelines`;
+      if(headingSubtitle) headingSubtitle.textContent = `Real-time status, synchronization progress, and warehouse tables across all accounts.`;
+    }
+
+    if(countBadge) {
+      countBadge.textContent = `${filtered.length} active`;
+    }
+    
+    if(!filtered.length) {
+      const emptyMsg = window._pipelineFilter === 'account' 
+        ? `No active pipelines configured for ${idLabel} yet.`
+        : (window._pipelineFilter === 'service' ? `No active pipelines configured for ${currentServiceMeta.name} yet.` : `No active pipelines found.`);
+
+      container.innerHTML = `
+        <div class="col-span-full flex flex-col items-center justify-center py-12 border border-dashed border-white/10 rounded-xl bg-white/[0.02]">
+          <i data-lucide="activity" class="h-8 w-8 text-gray-600 mb-3"></i>
+          <p class="text-gray-300 text-sm font-semibold">${emptyMsg}</p>
+          <p class="text-gray-500 text-xs mt-1">Select a property in Step 3 above and click "Run" to launch ingestion.</p>
+          <button onclick="setPipelineFilter('all')" class="mt-3 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
+            View All Account Pipelines (${connections.length}) &rarr;
+          </button>
+        </div>`;
+      setTimeout(() => lucide.createIcons(), 20);
+      return;
+    }
+
+    // Priority Ordering Logic:
+    // 1. Actively running/syncing pipelines (highest priority, float to top)
+    // 2. Pipelines with errors/failures
+    // 3. Most recently run pipelines (last_run_at DESC)
+    // 4. Creation order (id DESC)
+    const sorted = [...filtered].sort((a, b) => {
+      const aRunning = a.status === 'syncing' || a.status === 'pending' || window._activeSyncConnId === a.id;
+      const bRunning = b.status === 'syncing' || b.status === 'pending' || window._activeSyncConnId === b.id;
+      if (aRunning && !bRunning) return -1;
+      if (!aRunning && bRunning) return 1;
+
+      const aError = !!(a.last_error_message || a.status === 'failed' || a.status === 'error');
+      const bError = !!(b.last_error_message || b.status === 'failed' || b.status === 'error');
+      if (aError && !bError) return -1;
+      if (!aError && bError) return 1;
+
+      const aTime = a.last_run_at ? new Date(a.last_run_at).getTime() : 0;
+      const bTime = b.last_run_at ? new Date(b.last_run_at).getTime() : 0;
+      if (aTime !== bTime) return bTime - aTime;
+
+      return b.id - a.id;
+    });
+
+    container.innerHTML = sorted.map(c => {
+      const prog = window._connectionProgress[c.id];
+      const isRunning = c.status === 'syncing' || c.status === 'pending' || window._activeSyncConnId === c.id || (prog && !prog.isFinished && prog.pct < 100);
+      const curPct = prog ? prog.pct : (isRunning ? 10 : (c.status === 'healthy' || c.status === 'succeeded' ? 100 : 0));
+      const curPhase = prog?.phase || (isRunning ? 'Syncing' : '');
+
+      return `
+      <div class="bg-gray-900 border ${isRunning ? 'processing-live-card border-indigo-500 shadow-xl shadow-indigo-500/10' : 'border-white/5'} rounded-xl p-5 shadow-sm flex flex-col group relative overflow-hidden transition-all">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-start mb-4 relative z-10">
+          <div class="flex items-center gap-3">
+            ${statusDot(c.status)}
+            <div>
+              <div class="flex items-center gap-2">
+                <h3 class="text-sm font-semibold text-gray-200 leading-tight">${c.name}</h3>
+                ${isRunning ? `<span class="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400 beacon-dot"></span> Live</span>` : ''}
+              </div>
+              <p class="text-[10px] text-gray-500 mt-0.5 tracking-wide uppercase">${c.connector_id}</p>
+            </div>
+          </div>
+          
+          <div class="flex items-center gap-1.5">
+            <button onclick="syncNow(${c.id})" class="px-2.5 py-1 text-xs bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-md font-semibold border border-indigo-500/20 flex items-center gap-1 transition-colors active:scale-95" title="Trigger Run">
+              <i data-lucide="play" class="h-3 w-3 fill-current"></i> Run
+            </button>
+            ${c.enabled 
+              ? `<button onclick="act(${c.id},'pause')" class="p-1 text-gray-400 hover:text-amber-400 hover:bg-amber-400/10 rounded transition-colors" title="Pause"><i data-lucide="pause" class="h-3.5 w-3.5"></i></button>`
+              : `<button onclick="act(${c.id},'resume')" class="p-1 text-gray-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded transition-colors" title="Resume"><i data-lucide="play" class="h-3.5 w-3.5"></i></button>`
+            }
+            <button onclick="del(${c.id})" class="p-1 text-gray-400 hover:text-rose-400 hover:bg-rose-400/10 rounded transition-colors" title="Delete">
+              <i data-lucide="trash-2" class="h-3.5 w-3.5"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Sync Progress / Error -->
+        <div class="mb-3 relative z-10">
+          <div class="flex justify-between items-center mb-1">
+            <div class="text-[10px] font-medium text-indigo-400" id="phase-${c.id}">${curPhase}</div>
+            <div class="text-[10px] text-gray-500">Rows: <span class="text-gray-300 font-semibold" id="rows-${c.id}">${nf(c.total_records_synced)}</span></div>
+          </div>
+          <div class="h-1.5 w-full bg-gray-950 rounded-full overflow-hidden border border-white/5">
+            <div id="prog-${c.id}" class="h-full bg-indigo-500 progress-bar-fill ${isRunning ? 'shimmer-bar bg-gradient-to-r from-cyan-400 via-indigo-500 to-fuchsia-500' : ''} shadow-[0_0_10px_rgba(99,102,241,0.8)]" style="width: ${curPct}%"></div>
+          </div>
+        </div>
+
+        ${c.last_error_message ? `
+          <div class="mb-3 p-2 bg-rose-500/10 border border-rose-500/20 rounded text-xs text-rose-200/80 leading-relaxed truncate" title="${c.last_error_message}">
+             ${c.last_error_message}
+          </div>
+        ` : ""}
+
+        <!-- Run Result Section -->
+        <div id="result-${c.id}" class="relative z-10 mt-auto pt-3 border-t border-white/5">
+          ${renderResult(c.id)}
+        </div>
+        
+      </div>`;
+    }).join("");
+
+    connections.forEach(c => { 
+      const isRecent = window._recentlyFinished[c.id] && (Date.now() - window._recentlyFinished[c.id] < 15000);
+      if(["syncing","pending"].includes(c.status) && !window._polling.has(c.id) && !isRecent) {
+        pollRun(c.id);
+      }
+    });
+  }
+
+  function destLabel(d){
+    if(!d) return "—";
+    return d.engine === "sqlite" ? `${d.engine} · ${d.database}` : `${d.engine} · ${d.host||"?"}/${d.database}`;
+  }
+
+  function renderResult(connId){
+    const s = window._runSummary[connId];
+    if(!s) return `<div class="text-xs text-gray-500 flex items-center justify-between">No recent run data <button onclick="showRuns(${connId})" class="text-indigo-400 hover:underline">History</button></div>`;
+    
+    const { conn, run, detail } = s;
+    const isOk = run.status === "succeeded";
+    const isWarn = run.status === "partial_success";
+    
+    let colorClass = isOk ? "text-emerald-400" : isWarn ? "text-amber-400" : "text-rose-400";
+    let iconName = isOk ? "check-circle-2" : isWarn ? "alert-triangle" : "x-circle";
+    let title = { succeeded:"Sync Completed", partial_success:"Partial Success", failed:"Sync Failed", cancelled:"Cancelled" }[run.status] || run.status;
+    
+    const secs = run.duration_ms ? (run.duration_ms/1000).toFixed(1)+"s" : "—";
+    
+    return `
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-1.5 ${colorClass} text-xs font-medium">
+          <i data-lucide="${iconName}" class="h-4 w-4"></i>
+          ${title}
+        </div>
+        <div class="flex gap-2 text-xs">
+           <button class="text-gray-400 hover:text-indigo-400 transition-colors flex items-center" onclick="showData(${conn.id})"><i data-lucide="database" class="h-3 w-3 mr-1"></i> Data</button>
+           <button class="text-gray-400 hover:text-indigo-400 transition-colors flex items-center" onclick="showRuns(${conn.id})"><i data-lucide="file-text" class="h-3 w-3 mr-1"></i> Logs</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4 text-[11px] text-gray-500">
+        <span>Ins: <b class="text-gray-300">${nf(run.records_inserted)}</b></span>
+        <span>Upd: <b class="text-gray-300">${nf(run.records_updated)}</b></span>
+        <span>Skip: <b class="text-gray-300">${nf(run.records_skipped)}</b></span>
+        <span>Dur: <b class="text-gray-300">${secs}</b></span>
+      </div>
+    `;
+  }
+
+  async function syncNow(id){
+    window._activeSyncConnId = id;
+    const ph = $(`#phase-${id}`);
+    if(ph) ph.textContent = "Sync queued…";
+    delete window._runSummary[id];
+    delete window._recentlyFinished[id];
+    window._connectionProgress[id] = {
+      pct: 8,
+      phase: "Starting",
+      desc: "Sync queued…",
+      rows: 0,
+      isFinished: false
+    };
+
+    const foundConn = (window._connections || []).find(c => c.id === id);
+    if(foundConn) {
+      foundConn.status = 'syncing';
+    }
+
+    let prevRunId = null;
+    try {
+      const cBefore = await api(`/connections/${id}`);
+      if(cBefore?.latest_run) prevRunId = cBefore.latest_run.id;
+    } catch(e){}
+
+    try {
+      await api(`/connections/${id}/sync`, { method:"POST" });
+    } catch(e){
+      if(ph) ph.textContent = "Could not start sync: " + e.message;
+      return;
+    }
+
+    if(window._selectedIdentityId && window._selectedConnectorId){
+      loadLinkedProperties(window._selectedIdentityId, window._selectedConnectorId);
+    }
+    loadConnections();
+
+    pollRun(id, prevRunId);
+  }
+  
+  async function act(id, what){ await api(`/connections/${id}/${what}`, { method:"POST" }); refresh(); }
+  async function del(id){ if(confirm("Delete this connection and its synced rows?")){ await api(`/connections/${id}`,{method:"DELETE"}); refresh(); } }
+  
+  async function reconnect(id){
+    const { authorization_url } = await api(`/connections/${id}/reconnect?redirect_after=`+encodeURIComponent(location.origin+"/"), { method:"POST" });
+    location.href = authorization_url;
+  }
+
+  async function pollRun(connId, minRunId = null){
+    if(window._polling.has(connId)) return;
+    window._polling.add(connId);
+    let maxPctSeen = window._connectionProgress[connId]?.pct || 8;
+
+    try{
+      for(let i=0; i<400; i++){
+        let c;
+        try { c = await api(`/connections/${connId}`); } catch { await sleep(1200); continue; }
+        const run = c.latest_run;
+
+        // Connections card elements
+        const bar = $(`#prog-${connId}`);
+        const ph = $(`#phase-${connId}`);
+        const rowsEl = $(`#rows-${connId}`);
+
+        // Hub Step 3 Property card elements
+        const propBar = $(`#prop-bar-${connId}`);
+        const propPct = $(`#prop-pct-${connId}`);
+        const propPhase = $(`#prop-phase-${connId}`);
+        const propRows = $(`#prop-rows-${connId}`);
+        const propDesc = $(`#prop-desc-${connId}`);
+
+        // CRITICAL CHECK: If a new sync run was triggered and minRunId was provided,
+        // ignore any run that has run.id <= minRunId because it is a STALE PREVIOUS RUN!
+        if(minRunId != null && (!run || run.id <= minRunId)){
+          maxPctSeen = Math.max(maxPctSeen, 10);
+          if(bar) bar.style.width = maxPctSeen + "%";
+          if(ph) ph.textContent = "Initializing pipeline…";
+          if(propBar) propBar.style.width = maxPctSeen + "%";
+          if(propPct) propPct.textContent = maxPctSeen + "%";
+          if(propPhase) propPhase.textContent = "Starting";
+          if(propDesc) {
+            propDesc.innerHTML = `<i data-lucide="loader-2" class="h-3.5 w-3.5 animate-spin text-cyan-400"></i> <span class="text-cyan-200">Initializing synchronization runner…</span>`;
+            lucide.createIcons();
+          }
+          await sleep(800);
+          continue;
+        }
+
+        if(run){
+          const isFinished = isTerminal(run.status);
+          let currentPct = 15;
+          if(isFinished) {
+            currentPct = 100;
+          } else if(run.slices_total && run.slices_total > 0){
+            currentPct = Math.max(20, Math.min(95, Math.round(20 + 75 * (run.slices_completed / run.slices_total))));
+          } else if(run.phase === 'fetching') {
+            currentPct = 40;
+          } else if(run.phase === 'checking' || run.phase === 'starting' || run.phase === 'authenticating') {
+            currentPct = 15;
+          }
+
+          if(!isFinished){
+            // Monotonic non-decreasing progress, capped at 95% while running
+            maxPctSeen = Math.min(95, Math.max(maxPctSeen, currentPct));
+          } else {
+            maxPctSeen = 100;
+          }
+
+          // Save progress in global state
+          window._connectionProgress[connId] = {
+            pct: maxPctSeen,
+            phase: cap(run.phase || run.status),
+            desc: run.phase_detail || '',
+            rows: run.records_fetched || run.records_inserted || c.total_records_synced || 0,
+            isFinished: isFinished
+          };
+
+          if(bar) bar.style.width = maxPctSeen + "%";
+          if(rowsEl) rowsEl.textContent = nf(c.total_records_synced);
+          if(ph && !isFinished){
+            ph.textContent = cap(run.phase || run.status)
+              + (run.slices_total ? ` · slice ${run.slices_completed}/${run.slices_total}` : "")
+              + (run.records_fetched ? ` · ${nf(run.records_fetched)} rows` : "");
+          }
+
+          // Update Live Processing Card in Step 3 Hub in Realtime
+          if(propBar) propBar.style.width = maxPctSeen + "%";
+          if(propPct) propPct.textContent = maxPctSeen + "%";
+          if(propPhase) propPhase.textContent = cap(run.phase || run.status);
+          if(propRows) propRows.textContent = nf(run.records_fetched || run.records_inserted || c.total_records_synced) + " rows";
+          if(propDesc && !isFinished){
+            propDesc.innerHTML = `<i data-lucide="loader-2" class="h-3.5 w-3.5 animate-spin text-cyan-400"></i> <span class="text-cyan-200">${cap(run.phase || run.status)}${run.slices_total ? ' &bull; Slice ' + run.slices_completed + '/' + run.slices_total : ''}</span>`;
+            lucide.createIcons();
+          }
+
+          if(isFinished){
+            let detail = null;
+            try { detail = await api(`/sync-runs/${run.id}`); } catch {}
+            window._runSummary[connId] = { conn:c, run, detail };
+
+            if(bar) bar.style.width = "100%";
+            if(ph) ph.textContent = "";
+
+            if(propBar) propBar.style.width = "100%";
+            if(propPct) propPct.textContent = "100%";
+            if(propDesc){
+              const isOk = run.status === 'succeeded';
+              propDesc.innerHTML = `<span class="${isOk ? 'text-emerald-400' : 'text-rose-400'} flex items-center gap-1 font-semibold"><i data-lucide="${isOk ? 'check-circle-2' : 'alert-circle'}" class="h-3.5 w-3.5"></i> ${isOk ? 'Completed: ' + nf(run.records_inserted) + ' rows inserted (' + (run.duration_ms/1000).toFixed(1) + 's)' : 'Sync Failed: ' + (run.error_message || run.error_code || 'Error')}</span>`;
+              lucide.createIcons();
+            }
+
+            window._activeSyncConnId = null;
+            window._recentlyFinished[connId] = Date.now();
+
+            // Refresh underlying connections data silently without wiping DOM
+            try {
+              const res = await api("/connections");
+              window._connections = res.connections || [];
+            } catch(e){}
+
+            // Hold the 100% completion display for 3.5 seconds so user has clear visual confirmation
+            setTimeout(() => {
+              loadConnections();
+              if(window._selectedIdentityId && window._selectedConnectorId){
+                loadLinkedProperties(window._selectedIdentityId, window._selectedConnectorId);
+              }
+            }, 3500);
+
+            return;
+          }
+        }
+        await sleep(1000);
+      }
+    } finally {
+      window._polling.delete(connId);
+    }
+  }
+
+  async function showRuns(id){
+    const { runs } = await api(`/connections/${id}/runs`);
+    showDetail(runs);
+  }
+
+  let explorerCurrentData = null;
+
+  async function showData(id){
+    try {
+      const payload = await api(`/connections/${id}/data?limit=500`);
+      openExplorer(payload);
+    } catch(e) {
+      alert("Failed to load data: " + e.message);
+    }
+  }
+
+  function openExplorer(payload) {
+    explorerCurrentData = payload;
+    const modal = document.getElementById('explorer-modal');
+    const panel = document.getElementById('explorer-panel');
+    
+    document.getElementById('explorer-table-badge').textContent = payload.table_name || 'unknown_table';
+    document.getElementById('explorer-row-count').textContent = `${payload.total || payload.rows?.length || 0} rows`;
+    
+    document.getElementById('explorer-json-body').textContent = JSON.stringify(payload.raw_rows || payload.rows, null, 2);
+    
+    renderExplorerTable(payload.columns, payload.rows);
+    
+    document.getElementById('explorer-search').value = '';
+    setExplorerView('table');
+    
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+      panel.classList.remove('translate-x-full');
+      lucide.createIcons();
+    }, 10);
+  }
+  
+  function closeExplorer() {
+    const modal = document.getElementById('explorer-modal');
+    const panel = document.getElementById('explorer-panel');
+    panel.classList.add('translate-x-full');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+    }, 300);
+  }
+
+  function renderExplorerTable(columns, rows, filterText = '') {
+    const theadTr = document.getElementById('explorer-thead-tr');
+    const tbody = document.getElementById('explorer-tbody');
+    
+    if (!columns || !columns.length) {
+      theadTr.innerHTML = `<th class="px-4 py-3 text-xs font-semibold text-gray-400">Data</th>`;
+      tbody.innerHTML = rows.map(r => `<tr><td class="px-4 py-3"><pre class="text-[10px] text-gray-500">${JSON.stringify(r)}</pre></td></tr>`).join('');
+      return;
+    }
+
+    theadTr.innerHTML = columns.map(c => `<th class="px-6 py-3.5 text-xs font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">${c.label || c.key}</th>`).join('');
+    
+    const ft = filterText.toLowerCase();
+    const filteredRows = rows.filter(r => {
+      if (!ft) return true;
+      return Object.values(r).some(v => String(v).toLowerCase().includes(ft));
+    });
+
+    if (filteredRows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="${columns.length}" class="px-6 py-12 text-center text-gray-500">No matching records found.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filteredRows.map(r => {
+      const tds = columns.map(c => {
+        let val = r[c.key];
+        if (val === null || val === undefined) val = '-';
+        
+        let formatted = val;
+        let cellClass = "px-6 py-3 whitespace-nowrap";
+        
+        if (c.type === 'currency' && typeof val === 'number') {
+          formatted = '$' + val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+          cellClass += " text-emerald-400 font-medium";
+        } else if (c.type === 'percent' && typeof val === 'number') {
+          formatted = (val * 100).toFixed(2) + '%';
+        } else if (c.type === 'number' && typeof val === 'number') {
+          formatted = val.toLocaleString();
+        } else if (c.type === 'date') {
+          formatted = val;
+          cellClass += " text-gray-400 font-mono text-xs";
+        } else {
+          cellClass += " text-gray-300";
+        }
+        
+        return `<td class="${cellClass}">${formatted}</td>`;
+      }).join('');
+      return `<tr class="hover:bg-white/[0.02] transition-colors">${tds}</tr>`;
+    }).join('');
+  }
+
+  function filterExplorerTable() {
+    const val = document.getElementById('explorer-search').value;
+    if (explorerCurrentData) {
+      renderExplorerTable(explorerCurrentData.columns, explorerCurrentData.rows, val);
+    }
+  }
+
+  function setExplorerView(view) {
+    const tBtn = document.getElementById('btn-view-table');
+    const jBtn = document.getElementById('btn-view-json');
+    const tCont = document.getElementById('explorer-table-container');
+    const jCont = document.getElementById('explorer-json-container');
+    
+    if (view === 'table') {
+      tBtn.className = "px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 text-white shadow-sm transition-colors flex items-center gap-1.5";
+      jBtn.className = "px-3 py-1.5 text-xs font-medium rounded-md text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1.5 hover:bg-white/5";
+      tCont.classList.remove('hidden');
+      jCont.classList.add('hidden');
+    } else {
+      jBtn.className = "px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 text-white shadow-sm transition-colors flex items-center gap-1.5";
+      tBtn.className = "px-3 py-1.5 text-xs font-medium rounded-md text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1.5 hover:bg-white/5";
+      jCont.classList.remove('hidden');
+      tCont.classList.add('hidden');
+    }
+  }
+
+  function exportToCSV() {
+    if (!explorerCurrentData || !explorerCurrentData.rows || !explorerCurrentData.rows.length) return;
+    const { columns, rows, table_name } = explorerCurrentData;
+    
+    let csv = '';
+    if (columns && columns.length) {
+      csv += columns.map(c => `"${(c.label || c.key).replace(/"/g, '""')}"`).join(',') + '\\n';
+      rows.forEach(r => {
+        csv += columns.map(c => {
+          let val = r[c.key];
+          if (val === null || val === undefined) val = '';
+          return `"${String(val).replace(/"/g, '""')}"`;
+        }).join(',') + '\\n';
+      });
+    } else {
+      const keys = Object.keys(rows[0]);
+      csv += keys.map(k => `"${k.replace(/"/g, '""')}"`).join(',') + '\\n';
+      rows.forEach(r => {
+        csv += keys.map(k => `"${String(r[k] || '').replace(/"/g, '""')}"`).join(',') + '\\n';
+      });
+    }
+    
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${table_name || 'data_export'}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // Init
+  if(location.search.includes("status=connected")) history.replaceState({}, "", "/");
+  refresh();
+  setInterval(() => { if(TOKEN) { loadConnections().then(() => setTimeout(() => lucide.createIcons(), 50)).catch(()=>{}); } }, 15000);
+</script>
+</body>
+</html>

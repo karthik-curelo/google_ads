@@ -1,0 +1,65 @@
+{
+  "source": "meta_ads",
+  "connector_id": "meta_ads",
+  "refresh": "hand-maintained from Marketing API Insights reference; pin to META_API_VERSION",
+  "review_by": "2026-12-01",
+  "resources": {
+    "ad_account": { "value": "medium", "status": "implemented", "stream": "adaccounts" },
+    "campaign": { "value": "high", "status": "implemented" },
+    "adset": { "value": "high", "status": "implemented" },
+    "ad": { "value": "high", "status": "implemented" },
+    "ad_creative": { "value": "medium", "status": "implemented", "stream": "ad_creatives" },
+    "insights": { "value": "high", "status": "implemented" }
+  },
+  "insight_fields": {
+    "impressions": { "value": "high" }, "clicks": { "value": "high" }, "spend": { "value": "high" },
+    "reach": { "value": "high" }, "frequency": { "value": "high" },
+    "cpc": { "value": "high" }, "cpm": { "value": "high" }, "cpp": { "value": "medium", "status": "missing" },
+    "ctr": { "value": "high" }, "inline_link_clicks": { "value": "high" },
+    "inline_post_engagement": { "value": "medium", "status": "missing" },
+    "unique_clicks": { "value": "medium", "status": "missing" },
+    "unique_ctr": { "value": "medium", "status": "missing" },
+    "outbound_clicks": { "value": "medium", "status": "missing" },
+    "unique_outbound_clicks": { "value": "low", "status": "missing" },
+    "website_ctr": { "value": "low", "status": "missing" },
+    "cost_per_inline_link_click": { "value": "low", "status": "missing" },
+    "cost_per_unique_click": { "value": "low", "status": "missing" },
+    "actions": { "value": "high" }, "action_values": { "value": "high" },
+    "cost_per_action_type": { "value": "medium", "status": "missing" },
+    "purchase_roas": { "value": "high", "status": "missing" },
+    "website_purchase_roas": { "value": "medium", "status": "missing" },
+    "video_thruplay_watched_actions": { "value": "medium", "status": "missing" },
+    "video_p25_watched_actions": { "value": "medium", "status": "missing" },
+    "video_p50_watched_actions": { "value": "medium", "status": "missing" },
+    "video_p75_watched_actions": { "value": "medium", "status": "missing" },
+    "video_p100_watched_actions": { "value": "medium", "status": "missing" },
+    "video_30_sec_watched_actions": { "value": "low", "status": "missing" },
+    "video_avg_time_watched_actions": { "value": "low", "status": "missing" },
+    "quality_ranking": { "value": "medium", "status": "missing" },
+    "engagement_rate_ranking": { "value": "medium", "status": "missing" },
+    "conversion_rate_ranking": { "value": "medium", "status": "missing" }
+  },
+  "breakdowns": {
+    "age": { "value": "high", "status": "missing" },
+    "gender": { "value": "high", "status": "missing" },
+    "country": { "value": "high", "status": "missing" },
+    "region": { "value": "medium", "status": "missing" },
+    "publisher_platform": { "value": "high", "status": "missing" },
+    "platform_position": { "value": "high", "status": "missing" },
+    "impression_device": { "value": "medium", "status": "missing" },
+    "device_platform": { "value": "medium", "status": "missing" },
+    "hourly_stats_aggregated_by_advertiser_time_zone": { "value": "low", "status": "missing" }
+  },
+  "action_breakdowns": {
+    "action_type": { "value": "high", "status": "partial", "note": "actions[] kept raw; not split into columns" },
+    "action_destination": { "value": "low", "status": "missing" },
+    "action_target_id": { "value": "low", "status": "missing" }
+  },
+  "config": {
+    "action_attribution_windows": { "value": "high", "status": "implemented", "note": "per-connection config `action_attribution_windows`" }
+  },
+  "notes": [
+    "ads_read + business_management require Meta App Review outside dev mode — blocked resources are permission_gated.",
+    "Field/breakdown availability is version-specific; pin to META_API_VERSION and review on bump."
+  ]
+}

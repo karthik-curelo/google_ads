@@ -1,0 +1,38 @@
+{
+  "source": "google_search_console",
+  "connector_id": "google_search_console",
+  "refresh": "hand-maintained from Search Analytics API v3 reference",
+  "review_by": "2026-12-01",
+  "resources": {
+    "search_analytics": { "value": "high", "status": "implemented" },
+    "sites": { "value": "low", "status": "implemented", "note": "used by discover_resources" },
+    "sitemaps": { "value": "medium", "status": "missing", "note": "list + submission/warning/error/lastDownloaded per sitemap" }
+  },
+  "dimensions": {
+    "date": { "value": "high" },
+    "query": { "value": "high" },
+    "page": { "value": "high" },
+    "country": { "value": "high" },
+    "device": { "value": "high" },
+    "searchAppearance": { "value": "medium" },
+    "hour": { "value": "medium", "status": "missing", "note": "GSC hourly data; dataState HOURLY_ALL, 10-day window" }
+  },
+  "metrics": {
+    "clicks": { "value": "high" },
+    "impressions": { "value": "high" },
+    "ctr": { "value": "high" },
+    "position": { "value": "high" }
+  },
+  "search_types": {
+    "web": { "value": "high", "status": "implemented" },
+    "image": { "value": "medium", "status": "implemented", "note": "opt-in via `search_types` config -> suffixed streams" },
+    "video": { "value": "medium", "status": "implemented", "note": "opt-in via `search_types` config" },
+    "news": { "value": "low", "status": "implemented", "note": "opt-in via `search_types` config" },
+    "discover": { "value": "medium", "status": "implemented", "note": "opt-in via `search_types` config; query dimension is unavailable for discover" },
+    "googleNews": { "value": "low", "status": "implemented", "note": "opt-in via `search_types` config" }
+  },
+  "notes": [
+    "Search Analytics returns top rows under an internal cap — status platform_limited for row completeness.",
+    "~16 months retention; data finalises ~2 days late (connector already models this)."
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "source": "instagram_insights",
+  "connector_id": "instagram_insights",
+  "refresh": "hand-maintained from Instagram Platform Insights reference; pin to META_API_VERSION",
+  "review_by": "2026-12-01",
+  "resources": {
+    "account": { "value": "high", "status": "implemented" },
+    "media": { "value": "high", "status": "implemented" },
+    "media_insights": { "value": "high", "status": "implemented" },
+    "reels": { "value": "high", "status": "implemented", "stream": "reel_insights" },
+    "stories": { "value": "medium", "status": "implemented", "stream": "story_insights" },
+    "audience_demographics": { "value": "high", "status": "implemented", "stream": "audience_demographics" }
+  },
+  "account_metrics": {
+    "reach": { "value": "high" }, "follower_count": { "value": "high" },
+    "profile_views": { "value": "high" }, "website_clicks": { "value": "medium" },
+    "accounts_engaged": { "value": "high", "status": "missing" },
+    "total_interactions": { "value": "high", "status": "missing" },
+    "views": { "value": "high", "status": "missing", "note": "v22+ replacement for impressions" },
+    "profile_links_taps": { "value": "medium", "status": "missing" }
+  },
+  "media_metrics": {
+    "reach": { "value": "high" }, "saved": { "value": "high" }, "likes": { "value": "high" },
+    "comments": { "value": "high" }, "shares": { "value": "high" },
+    "total_interactions": { "value": "high" }, "views": { "value": "high" }
+  },
+  "reel_metrics": {
+    "plays": { "value": "high", "status": "missing" },
+    "ig_reels_avg_watch_time": { "value": "medium", "status": "missing" },
+    "ig_reels_video_view_total_time": { "value": "medium", "status": "missing" },
+    "clips_replays_count": { "value": "low", "status": "missing" }
+  },
+  "story_metrics": {
+    "reach": { "value": "high", "status": "missing" },
+    "replies": { "value": "medium", "status": "missing" },
+    "navigation": { "value": "medium", "status": "missing" }
+  },
+  "demographic_breakdowns": {
+    "age": { "value": "high", "status": "implemented", "note": "audience_demographics stream, breakdown='age'" },
+    "gender": { "value": "high", "status": "implemented", "note": "breakdown='gender'" },
+    "city": { "value": "medium", "status": "implemented", "note": "breakdown='city'" },
+    "country": { "value": "medium", "status": "implemented", "note": "breakdown='country'" }
+  },
+  "notes": [
+    "instagram_manage_insights needs Advanced Access via App Review — blocked pieces are permission_gated.",
+    "Account-level insights serve ~30 days per call (connector already models this)."
+  ]
+}

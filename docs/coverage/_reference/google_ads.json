@@ -1,0 +1,57 @@
+{
+  "source": "google_ads",
+  "connector_id": "google_ads",
+  "refresh": "SELECT name, category, selectable, selectable_with FROM google_ads_field  (GoogleAdsFieldService)",
+  "review_by": "2026-12-01",
+  "resources": {
+    "customer": { "value": "medium", "status": "implemented", "note": "read for currency" },
+    "campaign": { "value": "high", "status": "implemented" },
+    "ad_group": { "value": "high", "status": "implemented" },
+    "ad_group_ad": { "value": "high", "status": "missing", "note": "ad entity + final URLs + ad strength" },
+    "ad_group_criterion": { "value": "high", "status": "implemented", "note": "keyword_view perf" },
+    "keyword_view": { "value": "high", "status": "implemented" },
+    "search_term_view": { "value": "high", "status": "missing", "note": "actual user queries vs bid keywords" },
+    "geographic_view": { "value": "medium", "status": "missing" },
+    "age_range_view": { "value": "medium", "status": "missing" },
+    "gender_view": { "value": "medium", "status": "missing" },
+    "campaign_budget": { "value": "medium", "status": "implemented", "note": "amount only, via campaigns select" },
+    "conversion_action": { "value": "medium", "status": "implemented", "stream": "conversion_actions" },
+    "asset": { "value": "low", "status": "missing" },
+    "asset_group": { "value": "low", "status": "missing", "note": "Performance Max" },
+    "change_event": { "value": "low", "status": "missing" },
+    "label": { "value": "low", "status": "missing" },
+    "shopping_performance_view": { "value": "low", "status": "missing" }
+  },
+  "metrics": {
+    "metrics.impressions": { "value": "high" },
+    "metrics.clicks": { "value": "high" },
+    "metrics.cost_micros": { "value": "high" },
+    "metrics.conversions": { "value": "high" },
+    "metrics.conversions_value": { "value": "high" },
+    "metrics.ctr": { "value": "high" },
+    "metrics.average_cpc": { "value": "high" },
+    "metrics.average_cpm": { "value": "medium", "status": "missing" },
+    "metrics.all_conversions": { "value": "high", "status": "missing" },
+    "metrics.all_conversions_value": { "value": "high", "status": "missing" },
+    "metrics.view_through_conversions": { "value": "medium", "status": "missing" },
+    "metrics.cost_per_conversion": { "value": "medium", "status": "missing" },
+    "metrics.conversions_from_interactions_rate": { "value": "medium", "status": "missing" },
+    "metrics.search_impression_share": { "value": "high", "status": "missing", "note": "campaign/ad_group only" },
+    "metrics.search_budget_lost_impression_share": { "value": "medium", "status": "missing", "note": "campaign only" },
+    "metrics.search_rank_lost_impression_share": { "value": "medium", "status": "missing", "note": "campaign/ad_group only" },
+    "metrics.video_views": { "value": "low", "status": "missing" },
+    "metrics.interactions": { "value": "low", "status": "missing" }
+  },
+  "segments": {
+    "segments.date": { "value": "high" },
+    "segments.device": { "value": "high", "status": "missing" },
+    "segments.ad_network_type": { "value": "medium", "status": "missing" },
+    "segments.day_of_week": { "value": "low", "status": "missing" },
+    "segments.click_type": { "value": "low", "status": "missing" },
+    "segments.conversion_action_name": { "value": "medium", "status": "missing" }
+  },
+  "notes": [
+    "Metric/segment compatibility is per-resource — impression-share metrics are invalid on ad/keyword/geo/age/gender.",
+    "History effectively unlimited within account retention; bounded by backfill_days."
+  ]
+}

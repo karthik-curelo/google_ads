@@ -1,0 +1,56 @@
+source: google_ads
+connector_id: google_ads
+generated: 2026-09-07
+has_connector: true
+refresh: "SELECT name, category, selectable, selectable_with FROM google_ads_field  (GoogleAdsFieldService)"
+review_by: 2026-12-01
+verified_in_db: false   # flipped by tests/test_coverage_reaches_db.py
+sections:
+  resources:
+    "customer": implemented
+    "campaign": implemented
+    "ad_group": implemented
+    "ad_group_ad": implemented
+    "ad_group_criterion": implemented
+    "keyword_view": implemented
+    "search_term_view": implemented
+    "geographic_view": implemented
+    "age_range_view": implemented
+    "gender_view": implemented
+    "campaign_budget": implemented
+    "conversion_action": implemented
+    "asset": missing
+    "asset_group": missing
+    "change_event": missing
+    "label": missing
+    "shopping_performance_view": missing
+  metrics:
+    "metrics.impressions": implemented
+    "metrics.clicks": implemented
+    "metrics.cost_micros": implemented
+    "metrics.conversions": implemented
+    "metrics.conversions_value": implemented
+    "metrics.ctr": implemented
+    "metrics.average_cpc": implemented
+    "metrics.average_cpm": implemented
+    "metrics.all_conversions": implemented
+    "metrics.all_conversions_value": implemented
+    "metrics.view_through_conversions": implemented
+    "metrics.cost_per_conversion": implemented
+    "metrics.conversions_from_interactions_rate": implemented
+    "metrics.search_impression_share": implemented
+    "metrics.search_budget_lost_impression_share": implemented
+    "metrics.search_rank_lost_impression_share": implemented
+    "metrics.video_views": missing
+    "metrics.interactions": missing
+  segments:
+    "segments.date": implemented
+    "segments.device": implemented
+    "segments.ad_network_type": missing
+    "segments.day_of_week": missing
+    "segments.click_type": missing
+    "segments.conversion_action_name": missing
+tally:
+  implemented: 30
+  missing: 11
+coverage_pct: 73

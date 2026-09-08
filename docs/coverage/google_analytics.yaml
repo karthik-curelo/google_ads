@@ -1,0 +1,129 @@
+source: google_analytics
+connector_id: google_analytics
+generated: 2026-09-07
+has_connector: true
+refresh: "GET https://analyticsdata.googleapis.com/v1beta/properties/{id}/metadata"
+review_by: 2026-12-01
+verified_in_db: false   # flipped by tests/test_coverage_reaches_db.py
+sections:
+  report_methods:
+    "runReport": implemented
+    "batchRunReports": unsupported
+    "runPivotReport": unsupported
+    "runRealtimeReport": unsupported
+    "runFunnelReport": unsupported
+  dimensions:
+    "date": implemented
+    "dateHour": implemented
+    "dateHourMinute": unsupported
+    "year": missing
+    "month": missing
+    "week": missing
+    "isoWeek": missing
+    "nthDay": missing
+    "dayOfWeek": missing
+    "hour": missing
+    "country": implemented
+    "region": implemented
+    "city": implemented
+    "continent": missing
+    "countryId": missing
+    "language": implemented
+    "deviceCategory": implemented
+    "operatingSystem": implemented
+    "operatingSystemVersion": missing
+    "browser": implemented
+    "screenResolution": implemented
+    "platform": implemented
+    "appVersion": missing
+    "streamName": missing
+    "pagePath": implemented
+    "pagePathPlusQueryString": implemented
+    "pageTitle": implemented
+    "pageReferrer": missing
+    "landingPage": implemented
+    "landingPagePlusQueryString": missing
+    "hostName": missing
+    "fullPageUrl": missing
+    "eventName": implemented
+    "isKeyEvent": missing
+    "sessionDefaultChannelGroup": implemented
+    "sessionSource": implemented
+    "sessionMedium": implemented
+    "sessionCampaignName": implemented
+    "sessionSourceMedium": missing
+    "sessionSourcePlatform": missing
+    "sessionCampaignId": missing
+    "sessionManualAdContent": missing
+    "sessionManualTerm": missing
+    "sessionGoogleAdsAdGroupName": implemented
+    "sessionGoogleAdsCampaignName": implemented
+    "sessionGoogleAdsKeyword": missing
+    "firstUserDefaultChannelGroup": implemented
+    "firstUserSource": implemented
+    "firstUserMedium": implemented
+    "firstUserCampaignName": implemented
+    "firstUserSourceMedium": missing
+    "firstUserGoogleAdsCampaignName": missing
+    "newVsReturning": implemented
+    "userAgeBracket": implemented
+    "userGender": implemented
+    "brandingInterest": implemented
+    "audienceName": missing
+    "cohort": unsupported
+    "cohortNthDay": unsupported
+    "itemName": implemented
+    "itemId": implemented
+    "itemBrand": missing
+    "itemCategory": implemented
+    "itemListName": missing
+    "itemPromotionName": missing
+    "transactionId": missing
+    "customEvent:*": partial
+    "customUser:*": partial
+  metrics:
+    "activeUsers": implemented
+    "totalUsers": implemented
+    "newUsers": implemented
+    "sessions": implemented
+    "engagedSessions": implemented
+    "sessionsPerUser": missing
+    "engagementRate": implemented
+    "bounceRate": implemented
+    "averageSessionDuration": implemented
+    "userEngagementDuration": implemented
+    "screenPageViews": implemented
+    "screenPageViewsPerSession": implemented
+    "screenPageViewsPerUser": missing
+    "eventCount": implemented
+    "eventCountPerUser": missing
+    "eventsPerSession": missing
+    "keyEvents": implemented
+    "conversions": implemented
+    "userKeyEventRate": missing
+    "sessionKeyEventRate": missing
+    "totalRevenue": implemented
+    "purchaseRevenue": implemented
+    "totalPurchasers": implemented
+    "firstTimePurchasers": implemented
+    "averagePurchaseRevenue": missing
+    "averageRevenuePerUser": missing
+    "transactions": implemented
+    "transactionsPerPurchaser": missing
+    "itemsViewed": implemented
+    "itemsAddedToCart": implemented
+    "itemsPurchased": implemented
+    "itemRevenue": implemented
+    "cartToViewRate": missing
+    "purchaserRate": missing
+    "advertiserAdCost": implemented
+    "advertiserAdClicks": implemented
+    "advertiserAdImpressions": implemented
+    "returnOnAdSpend": implemented
+    "customEvent:*": partial
+tally:
+  implemented: 61
+  missing: 41
+  partial: 3
+  unsupported: 7
+coverage_pct: 58

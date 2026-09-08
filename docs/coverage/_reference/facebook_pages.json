@@ -1,0 +1,34 @@
+{
+  "source": "facebook_pages",
+  "connector_id": "facebook_pages",
+  "refresh": "hand-maintained from Pages API / Page Insights reference; pin to META_API_VERSION",
+  "review_by": "2026-12-01",
+  "resources": {
+    "page": { "value": "high", "status": "missing", "note": "id, name, category, about, fan_count, followers_count, link, verification_status" },
+    "posts": { "value": "high", "status": "missing", "note": "published_posts edge: message, created_time, permalink, status_type, attachments, shares, reactions summary" },
+    "page_insights": { "value": "high", "status": "missing", "note": "daily page-level metrics" },
+    "post_insights": { "value": "high", "status": "missing", "note": "per-post lifetime + daily metrics" }
+  },
+  "page_insight_metrics": {
+    "page_impressions": { "value": "high", "status": "missing" },
+    "page_impressions_unique": { "value": "high", "status": "missing" },
+    "page_post_engagements": { "value": "high", "status": "missing" },
+    "page_fans": { "value": "medium", "status": "missing" },
+    "page_fan_adds": { "value": "medium", "status": "missing" },
+    "page_fan_removes": { "value": "medium", "status": "missing" },
+    "page_views_total": { "value": "medium", "status": "missing" },
+    "page_video_views": { "value": "medium", "status": "missing" }
+  },
+  "post_insight_metrics": {
+    "post_impressions": { "value": "high", "status": "missing" },
+    "post_impressions_unique": { "value": "high", "status": "missing" },
+    "post_clicks": { "value": "high", "status": "missing" },
+    "post_reactions_by_type_total": { "value": "medium", "status": "missing" },
+    "post_video_views": { "value": "medium", "status": "missing" }
+  },
+  "notes": [
+    "Needs pages_read_engagement + pages_show_list + read_insights; Advanced Access via App Review outside dev mode.",
+    "Several legacy page_* metrics were deprecated/renamed in recent Graph versions — verify names on the pinned version at implementation time.",
+    "No connector exists yet — every row here is 'missing' until app/connectors/meta/pages.py ships."
+  ]
+}

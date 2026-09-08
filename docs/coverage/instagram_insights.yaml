@@ -1,0 +1,49 @@
+source: instagram_insights
+connector_id: instagram_insights
+generated: 2026-09-07
+has_connector: true
+refresh: "hand-maintained from Instagram Platform Insights reference; pin to META_API_VERSION"
+review_by: 2026-12-01
+verified_in_db: false   # flipped by tests/test_coverage_reaches_db.py
+sections:
+  resources:
+    "account": implemented
+    "media": implemented
+    "media_insights": implemented
+    "reels": implemented
+    "stories": implemented
+    "audience_demographics": implemented
+  account_metrics:
+    "reach": implemented
+    "follower_count": implemented
+    "profile_views": implemented
+    "website_clicks": implemented
+    "accounts_engaged": implemented
+    "total_interactions": implemented
+    "views": implemented
+    "profile_links_taps": implemented
+  media_metrics:
+    "reach": implemented
+    "saved": implemented
+    "likes": implemented
+    "comments": implemented
+    "shares": implemented
+    "total_interactions": implemented
+    "views": implemented
+  reel_metrics:
+    "plays": implemented
+    "ig_reels_avg_watch_time": implemented
+    "ig_reels_video_view_total_time": implemented
+    "clips_replays_count": implemented
+  story_metrics:
+    "reach": implemented
+    "replies": implemented
+    "navigation": implemented
+  demographic_breakdowns:
+    "age": implemented
+    "gender": implemented
+    "city": implemented
+    "country": implemented
+tally:
+  implemented: 32
+coverage_pct: 100

@@ -1,0 +1,70 @@
+source: meta_ads
+connector_id: meta_ads
+generated: 2026-09-07
+has_connector: true
+refresh: "hand-maintained from Marketing API Insights reference; pin to META_API_VERSION"
+review_by: 2026-12-01
+verified_in_db: false   # flipped by tests/test_coverage_reaches_db.py
+sections:
+  resources:
+    "ad_account": implemented
+    "campaign": implemented
+    "adset": implemented
+    "ad": implemented
+    "ad_creative": implemented
+    "insights": implemented
+  insight_fields:
+    "impressions": implemented
+    "clicks": implemented
+    "spend": implemented
+    "reach": implemented
+    "frequency": implemented
+    "cpc": implemented
+    "cpm": implemented
+    "cpp": implemented
+    "ctr": implemented
+    "inline_link_clicks": implemented
+    "inline_post_engagement": implemented
+    "unique_clicks": implemented
+    "unique_ctr": implemented
+    "outbound_clicks": implemented
+    "unique_outbound_clicks": implemented
+    "website_ctr": implemented
+    "cost_per_inline_link_click": implemented
+    "cost_per_unique_click": implemented
+    "actions": implemented
+    "action_values": implemented
+    "cost_per_action_type": implemented
+    "purchase_roas": implemented
+    "website_purchase_roas": implemented
+    "video_thruplay_watched_actions": implemented
+    "video_p25_watched_actions": implemented
+    "video_p50_watched_actions": implemented
+    "video_p75_watched_actions": implemented
+    "video_p100_watched_actions": implemented
+    "video_30_sec_watched_actions": implemented
+    "video_avg_time_watched_actions": implemented
+    "quality_ranking": implemented
+    "engagement_rate_ranking": implemented
+    "conversion_rate_ranking": implemented
+  breakdowns:
+    "age": implemented
+    "gender": implemented
+    "country": implemented
+    "region": implemented
+    "publisher_platform": implemented
+    "platform_position": implemented
+    "impression_device": implemented
+    "device_platform": implemented
+    "hourly_stats_aggregated_by_advertiser_time_zone": missing
+  action_breakdowns:
+    "action_type": partial
+    "action_destination": missing
+    "action_target_id": missing
+  config:
+    "action_attribution_windows": implemented
+tally:
+  implemented: 48
+  missing: 3
+  partial: 1
+coverage_pct: 92

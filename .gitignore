@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets & credentials — never commit
+.env
+credentials.json
+*.pem
+
+# Local database / exports
+*.db
+*.db-journal
+*.sqlite3
+*.csv
