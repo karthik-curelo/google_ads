@@ -179,4 +179,5 @@ account-level insights serve ~30 days and audience/demographic metrics are not
 implemented in v1; the scheduler is single-process (documented upgrade path in
 `app/sync/scheduler.py`).
 #   g o o g l e _ a d s  
+ #   g o o g l e _ a d s  
  
