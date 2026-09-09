@@ -7,7 +7,7 @@ isolation.
 
     runner.py     one connection, one run: CHECK -> DISCOVER -> read slices ->
                   write -> STATE COMMIT, emitting phase/progress to a SyncRun
-    writer.py     the destination: batched upsert into report_rows / ad_entities,
+    writer.py     the destination: batched upsert into <source>_performance / ad_entities,
                   skipped-record accounting
     state.py      per-stream cursor load and monotonic commit
     scheduler.py  in-process poll loop that claims due connections and runs them

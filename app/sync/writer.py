@@ -27,9 +27,11 @@ from app.core.database import SessionLocal, bulk_insert, bulk_upsert
 from app.core.logging import get_logger
 from app.models import (
     AdEntity,
+    FacebookPagesPerformance,
     GoogleAdsPerformance,
     GoogleAnalyticsPerformance,
     GoogleSearchConsolePerformance,
+    InstagramInsightsPerformance,
     MetaAdsPerformance,
     SkippedRecord,
     make_record_key,
@@ -58,6 +60,7 @@ MEASURE_COLUMNS: frozenset[str] = frozenset(
         "avg_session_duration",
         "screen_page_views_per_session",
         "user_engagement_duration",
+        "views",
     }
 )
 
@@ -66,6 +69,8 @@ CONNECTOR_MODEL_MAP = {
     "google_analytics": GoogleAnalyticsPerformance,
     "google_search_console": GoogleSearchConsolePerformance,
     "meta_ads": MetaAdsPerformance,
+    "instagram_insights": InstagramInsightsPerformance,
+    "facebook_pages": FacebookPagesPerformance,
 }
 
 _ENTITY_CONFLICT = ("connection_id", "level", "external_id")
@@ -158,20 +163,13 @@ class DestinationWriter:
             if rows:
                 existing = await self._count_existing(session, stream.name, [r["record_key"] for r in rows])
                 
-                # Dynamically determine the update columns based on the mapped model
-                update_cols = [
-                    c.name for c in self.model.__table__.columns
-                    if c.name not in (
-                        "id", 
-                        "organization_id", 
-                        "connection_id", 
-                        "connector_id", 
-                        "provider", 
-                        "stream", 
-                        "resource_id", 
-                        "record_key"
-                    )
-                ]
+                # Update every column except identity/ownership and `ingested_at`
+                # (that records first-seen; a lookback re-fetch must not bump it).
+                _frozen = {
+                    "id", "organization_id", "connection_id", "connector_id",
+                    "provider", "stream", "resource_id", "record_key", "ingested_at",
+                }
+                update_cols = [c.name for c in self.model.__table__.columns if c.name not in _frozen]
                 
                 await bulk_upsert(
                     session,
@@ -208,13 +206,14 @@ class DestinationWriter:
             "source_updated_at": None,
         }
         measures = record.measures or {}
-        # Only populate measure columns that actually exist on this specific table
-        if self.model:
-            model_cols = {c.name for c in self.model.__table__.columns}
-            for col in MEASURE_COLUMNS:
-                if col in model_cols:
-                    row[col] = measures.get(col)
-        return row
+        model_cols = {c.name for c in self.model.__table__.columns} if self.model else set()
+        for col in MEASURE_COLUMNS:
+            if col in model_cols:
+                row[col] = measures.get(col)
+        # Per-source tables differ (Search Console has no `currency`, GA4 no
+        # `reach`, …). Drop any key that is not a real column on this table so
+        # the INSERT does not reference a column that does not exist.
+        return {k: v for k, v in row.items() if k in model_cols} if model_cols else row
 
     async def _count_existing(self, session, stream: str, keys: list[str]) -> int:
         from sqlalchemy import func, select

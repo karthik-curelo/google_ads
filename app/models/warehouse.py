@@ -1,20 +1,22 @@
 """Destination (warehouse) tables.
 
-§11 asks for a common model that does not destroy provider-native detail. For
-five marketing sources the useful shape is *not* twenty-five bespoke tables —
-the whole reason to ingest Google Ads and Meta Ads together is to compare spend
-in one query, and bespoke tables make that a union of incompatible schemas.
+The fact grain is one physical table per source
+(`<connector_id>_performance`), all sharing `PerformanceRowMixin`: the common
+provenance columns, `date`, the full provider-native `dimensions` / `metrics` /
+`raw` payload as JSON, and a small set of typed measure columns that make sense
+for that source (spend/clicks/conversions for the ad sources, sessions/users for
+GA4, clicks/impressions/position for Search Console, …). A cross-provider spend
+comparison is a `UNION ALL` over the ad tables rather than a filter on one wide
+table.
 
-So the model is two tables:
+  <source>_performance   fact grain — google_ads_performance,
+                          google_analytics_performance,
+                          google_search_console_performance, meta_ads_performance,
+                          instagram_insights_performance, facebook_pages_performance.
 
-  report_rows   the fact grain (one row per stream x date x dimension tuple),
-                with the handful of measures every marketing provider shares
-                promoted to typed columns, and the full provider-native
-                dimensions/metrics/raw payload retained as JSON alongside.
-
-  ad_entities   the entity grain (campaign, ad set/ad group, ad, keyword) —
-                slowly-changing attributes that do not belong in a daily fact
-                table, shared by Google Ads and Meta Ads.
+  ad_entities             entity grain (campaign, ad set/ad group, ad, keyword,
+                          creative, sitemap, media, page, post) — slowly-changing
+                          attributes shared by every source that has them.
 
 Derived ratios (CTR, CPC, CPA, ROAS) are deliberately *not* stored. They are
 computed on read from the stored measures, so they can never disagree with the
@@ -38,7 +40,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, declared_attr
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from app.models.base import Base, JSONType, PKType, TimestampType, utcnow
 
@@ -156,6 +158,22 @@ class GoogleSearchConsolePerformance(PerformanceRowMixin, Base):
     average_position: Mapped[float | None] = mapped_column(Numeric(10, 4))
 
 
+class InstagramInsightsPerformance(PerformanceRowMixin, Base):
+    __tablename__ = "instagram_insights_performance"
+
+    reach: Mapped[int | None] = mapped_column(Integer)
+    impressions: Mapped[int | None] = mapped_column(Integer)
+    views: Mapped[int | None] = mapped_column(Integer)
+
+
+class FacebookPagesPerformance(PerformanceRowMixin, Base):
+    __tablename__ = "facebook_pages_performance"
+
+    impressions: Mapped[int | None] = mapped_column(Integer)
+    reach: Mapped[int | None] = mapped_column(Integer)
+    clicks: Mapped[int | None] = mapped_column(Integer)
+
+
 
 class AdEntity(Base):
     """Campaign / ad group / ad / keyword attributes, Google Ads and Meta Ads."""
@@ -230,4 +248,6 @@ __all__ = [
     "MetaAdsPerformance",
     "GoogleAnalyticsPerformance",
     "GoogleSearchConsolePerformance",
+    "InstagramInsightsPerformance",
+    "FacebookPagesPerformance",
 ]

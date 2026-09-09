@@ -18,6 +18,14 @@ from app.connectors.base import (
 from app.connectors.http import HttpClient
 from app.connectors.validation import build_json_schema
 
+# The warehouse splits fact rows into one table per source. The stub connector
+# has no table of its own, so point it at the GA4 one (it has a `sessions`
+# column, which is what the stub emits).
+from app.models import GoogleAnalyticsPerformance as _StubPerf
+from app.sync import writer as _writer
+
+_writer.CONNECTOR_MODEL_MAP.setdefault("stub", _StubPerf)
+
 
 class FakeTokenProvider:
     def __init__(self, token: str = "test-access-token", scopes: Sequence[str] = ()) -> None:

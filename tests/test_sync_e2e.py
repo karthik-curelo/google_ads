@@ -8,8 +8,8 @@ from app.connectors import errors as E
 from app.connectors.registry import RegistryEntry, registry
 from app.models import (
     Connection,
+    GoogleAnalyticsPerformance,
     OAuthIdentity,
-    ReportRow,
     SyncError,
     SyncRun,
     SyncState,
@@ -65,7 +65,7 @@ async def test_full_sync_writes_rows_and_advances_cursor(session, org):
     assert outcome.status == "succeeded"
     assert outcome.records_inserted == 5 * 2  # 5 days (today-4..today) × 2 rows
 
-    rows = (await session.execute(ReportRow.__table__.select())).all()
+    rows = (await session.execute(GoogleAnalyticsPerformance.__table__.select())).all()
     assert len(rows) == 10
     assert {r.stream for r in rows} == {"daily"}
     assert all(r.sessions in (10, 11) for r in rows)
@@ -91,7 +91,7 @@ async def test_incremental_second_run_only_fetches_lookback(session, org):
     assert out2.status == "succeeded"
     # second run covers only cursor-2d .. today (3 days) not the full backfill
     assert out2.records_fetched == 3 * 3
-    rows = (await session.execute(ReportRow.__table__.select())).all()
+    rows = (await session.execute(GoogleAnalyticsPerformance.__table__.select())).all()
     # 5 original days + 1 new channel per lookback day; no duplicates
     assert len({(r.date, r.dimensions["channel"]) for r in rows}) == len(rows)
 

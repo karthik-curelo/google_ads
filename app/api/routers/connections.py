@@ -15,16 +15,13 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
-from app.core.logging import get_logger
-
-logger = get_logger(__name__)
-
 from app.api.deps import OrgDep, SchedulerDep, SessionDep, build_connector
 from app.connectors import errors as E
 from app.connectors.base import HealthReport
 from app.connectors.registry import load_connectors
 from app.core.config import get_settings
 from app.core.database import destination_info
+from app.core.logging import get_logger
 from app.models import (
     CONN_PAUSED,
     CONN_PENDING,
@@ -32,15 +29,14 @@ from app.models import (
     Connection,
     ConnectorResource,
     OAuthIdentity,
-    GoogleAdsPerformance,
-    GoogleAnalyticsPerformance,
-    GoogleSearchConsolePerformance,
-    MetaAdsPerformance,
     SyncRun,
 )
 from app.oauth.service import begin_authorization
 from app.sync.scheduler import trigger_sync_detached
 from app.sync.state import reset_state
+from app.sync.writer import CONNECTOR_MODEL_MAP
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/connections", tags=["connections"])
 
@@ -382,11 +378,9 @@ async def connection_runs(
     return {"runs": [_serialize_run(r) for r in rows]}
 
 
+# One performance table per source — single source of truth is the writer's map.
 MASTER_TABLES: dict[str, str] = {
-    "google_search_console": "google_search_console_performance",
-    "google_analytics": "google_analytics_performance",
-    "google_ads": "google_ads_performance",
-    "meta_ads": "meta_ads_performance",
+    cid: model.__tablename__ for cid, model in CONNECTOR_MODEL_MAP.items()
 }
 
 COLUMN_CONFIGS: dict[str, list[dict[str, str]]] = {
@@ -455,12 +449,7 @@ async def connection_data(
     limit: int = Query(100, le=1000),
 ):
     conn = await _own(session, org, connection_id)
-    model_map = {
-        "google_ads": GoogleAdsPerformance,
-        "google_analytics": GoogleAnalyticsPerformance,
-        "google_search_console": GoogleSearchConsolePerformance,
-        "meta_ads": MetaAdsPerformance,
-    }
+    model_map = CONNECTOR_MODEL_MAP
 
     if grain == "entity":
         stmt = select(AdEntity).where(AdEntity.connection_id == conn.id)
@@ -506,7 +495,7 @@ async def connection_data(
 
             cols = COLUMN_CONFIGS.get(master_table, [])
             if not cols and tabular_rows:
-                cols = [{"key": k, "label": k.replace("_", " ").title(), "type": "text"} for k in tabular_rows[0].keys()]
+                cols = [{"key": k, "label": k.replace("_", " ").title(), "type": "text"} for k in tabular_rows[0]]
 
             return {
                 "table_name": master_table,
@@ -584,9 +573,12 @@ def _serialize(c: Connection) -> dict:
 
 def _destination_for(connector_id: str) -> dict:
     info = dict(destination_info())
-    tables = [info["fact_table"]]
-    if connector_id in ("google_ads", "meta_ads"):
+    fact = info["fact_tables"].get(connector_id)
+    tables = [fact] if fact else []
+    # every source except GA4 also writes campaign-tree / object rows to ad_entities
+    if connector_id != "google_analytics":
         tables.append(info["entity_table"])
+    info["fact_table"] = fact
     info["tables"] = tables
     return info
 

@@ -288,7 +288,7 @@ class InstagramInsightsConnector(MetaConnector):
                 date=row_date,
                 dimensions={"date": day},
                 metrics=metric_nums,
-                measures={"reach": metric_nums.get("reach")},
+                measures={"reach": metric_nums.get("reach"), "views": metric_nums.get("views")},
                 raw={"date": day, "metrics": values},
             )
 
@@ -344,7 +344,7 @@ class InstagramInsightsConnector(MetaConnector):
                 date=ts,
                 dimensions={"media_id": media_id, "media_type": media.get("media_type")},
                 metrics=nums,
-                measures={"reach": nums.get("reach")},
+                measures={"reach": nums.get("reach"), "views": nums.get("views")},
                 raw={"media_id": media_id, "insights": values, "media": media},
             )
 
@@ -379,7 +379,7 @@ class InstagramInsightsConnector(MetaConnector):
                 date=ts,
                 dimensions={"media_id": media_id},
                 metrics=nums,
-                measures={"reach": nums.get("reach")},
+                measures={"reach": nums.get("reach"), "views": nums.get("views")},
                 raw={"media_id": media_id, "insights": values, "story": story},
             )
 

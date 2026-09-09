@@ -71,15 +71,17 @@ def dialect_name() -> str:
 @lru_cache
 def destination_info() -> dict[str, Any]:
     """Where synced rows land — for the UI. Credentials are never included."""
+    from app.sync.writer import CONNECTOR_MODEL_MAP
+
     url = make_url(settings.database_url)
     backend = url.get_backend_name()  # 'postgresql' | 'sqlite'
     return {
         "engine": backend,
         "database": url.database,
         "host": None if backend == "sqlite" else url.host,
-        # report_rows holds every fact stream (GA4 + Search Console + Ads daily
-        # metrics); ad_entities holds Google/Meta campaign-tree attributes.
-        "fact_table": "report_rows",
+        # One performance table per source (fact grain); ad_entities holds the
+        # Google/Meta campaign-tree attributes for every source that has them.
+        "fact_tables": {cid: m.__tablename__ for cid, m in CONNECTOR_MODEL_MAP.items()},
         "entity_table": "ad_entities",
     }
 

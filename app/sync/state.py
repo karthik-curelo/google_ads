@@ -17,6 +17,7 @@ from datetime import date
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.connectors.slicing import advance_cursor, parse_cursor
 from app.core.database import SessionLocal
@@ -63,33 +64,51 @@ async def commit_state(
     added_records: int = 0,
     blob: dict[str, Any] | None = None,
 ) -> StreamState:
-    """Advance the cursor to `reached` (monotonic) and persist. Call after write."""
+    """Advance the cursor to `reached` (monotonic) and persist. Call after write.
+
+    Two code paths can commit state for the same (connection, stream) at once — a
+    manual "Sync now" landing while a scheduled run is mid-flight. Both would
+    SELECT-then-INSERT and the second hits the UNIQUE constraint, so the loser of
+    that race re-reads and updates the row the winner created. The cursor is
+    advanced against whatever is in the DB *now*, not just this run's stale
+    in-memory value, so a concurrent further-ahead write is never rewound.
+    """
     new_cursor = advance_cursor(state.cursor_value, reached)
 
-    async with SessionLocal() as session:
-        row = (
-            await session.execute(
-                select(SyncState).where(
-                    SyncState.connection_id == state.connection_id,
-                    SyncState.stream == state.stream,
+    for attempt in (1, 2):
+        async with SessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(SyncState).where(
+                        SyncState.connection_id == state.connection_id,
+                        SyncState.stream == state.stream,
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            row = SyncState(
-                connection_id=state.connection_id,
-                stream=state.stream,
-                cursor_field=state.cursor_field,
-            )
-            session.add(row)
-        row.cursor_field = state.cursor_field or row.cursor_field
-        row.cursor_value = new_cursor
-        if blob is not None:
-            row.state = blob
-        row.records_synced = (row.records_synced or 0) + max(0, added_records)
-        await session.commit()
+            ).scalar_one_or_none()
+            if row is None:
+                row = SyncState(
+                    connection_id=state.connection_id,
+                    stream=state.stream,
+                    cursor_field=state.cursor_field,
+                )
+                session.add(row)
+            row.cursor_field = state.cursor_field or row.cursor_field
+            row.cursor_value = advance_cursor(row.cursor_value, new_cursor)
+            if blob is not None:
+                row.state = blob
+            row.records_synced = (row.records_synced or 0) + max(0, added_records)
+            try:
+                await session.commit()
+                persisted = row.cursor_value
+                break
+            except IntegrityError:
+                await session.rollback()
+                if attempt == 2:
+                    raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        persisted = new_cursor
 
-    state.cursor_value = new_cursor
+    state.cursor_value = persisted
     if blob is not None:
         state.blob = blob
     state.records_synced += max(0, added_records)

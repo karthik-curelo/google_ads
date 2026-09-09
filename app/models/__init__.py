@@ -36,9 +36,11 @@ from app.models.platform import (
 )
 from app.models.warehouse import (
     AdEntity,
+    FacebookPagesPerformance,
     GoogleAdsPerformance,
     GoogleAnalyticsPerformance,
     GoogleSearchConsolePerformance,
+    InstagramInsightsPerformance,
     MetaAdsPerformance,
     SkippedRecord,
     make_record_key,
@@ -73,9 +75,11 @@ __all__ = [
     "OAuthIdentity",
     "OAuthState",
     "Organization",
+    "FacebookPagesPerformance",
     "GoogleAdsPerformance",
     "GoogleAnalyticsPerformance",
     "GoogleSearchConsolePerformance",
+    "InstagramInsightsPerformance",
     "MetaAdsPerformance",
     "SkippedRecord",
     "SourceSchema",

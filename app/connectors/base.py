@@ -115,7 +115,7 @@ class StreamDefinition:
     source_defined_cursor: bool = True
     default_cursor_field: str | None = "date"
     default_destination_sync_mode: DestinationSyncMode = DestinationSyncMode.APPEND_DEDUP
-    # "fact" rows land in report_rows; "entity" rows land in ad_entities.
+    # "fact" rows land in the source's <source>_performance table; "entity" rows in ad_entities.
     grain: str = "fact"
     # Days per request window. The single most important knob in the framework:
     # it bounds response size (so a large property cannot produce a multi-hundred-MB
@@ -154,7 +154,7 @@ class StreamSlice:
 
 @dataclass(slots=True)
 class Record:
-    """A fact row destined for `report_rows`."""
+    """A fact row destined for the source's performance table."""
 
     stream: str
     key_values: dict[str, Any]

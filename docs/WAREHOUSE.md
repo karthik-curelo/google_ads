@@ -2,31 +2,47 @@
 
 ## Where synced data lands
 
-Two physical tables, written by `app/sync/writer.py`:
+One **fact table per source** plus one shared **entity** table, written by
+`app/sync/writer.py` (`CONNECTOR_MODEL_MAP` routes each connector to its table):
 
-| Table | Grain | Contents |
+| Table | Grain | Written by |
 |---|---|---|
-| `report_rows` | fact (one row per stream × date × dimension tuple) | every GA4 / Search Console / Ads daily-metric stream |
-| `ad_entities` | entity | Google/Meta campaign · ad group · ad · keyword attributes |
+| `google_analytics_performance` | fact | `google_analytics` |
+| `google_search_console_performance` | fact | `google_search_console` |
+| `google_ads_performance` | fact | `google_ads` |
+| `meta_ads_performance` | fact | `meta_ads` |
+| `instagram_insights_performance` | fact | `instagram_insights` |
+| `facebook_pages_performance` | fact | `facebook_pages` |
+| `ad_entities` | entity | every source that has campaign-tree / object rows (Ads campaigns·ad groups·ads·keywords·creatives·conversion actions, GSC sitemaps, IG media, FB pages·posts) |
+| `skipped_records` | — | rows dropped in validation, with the reason (§19) |
 
-Provider-native detail is never dropped: the full `dimensions`, `metrics` and
-`raw` payloads ride along as JSON; the measures shared across providers
-(`sessions`, `users`, `clicks`, `cost`, `revenue`, `bounce_rate`, …) are also
-promoted to typed columns for fast SQL.
+All fact tables share `PerformanceRowMixin`: `organization_id`, `connection_id`,
+`connector_id`, `provider`, `stream`, `resource_id`, `record_key`, `date`, the
+full provider-native `dimensions` / `metrics` / `raw` as JSON, and bookkeeping
+(`schema_version`, `sync_run_id`, `source_updated_at`, `ingested_at`). Each table
+then adds the typed measure columns that make sense for its source — spend /
+clicks / conversions for the ad sources, `sessions` / `users` for GA4,
+`clicks` / `impressions` / `average_position` for Search Console, etc. Nothing
+provider-native is lost; the typed columns are just a fast path.
 
 Per property / site: filter on `resource_id` (raw provider id) or
-`connection_id`. Per stream: filter on `stream`.
+`connection_id`. Per stream: filter on `stream`. A cross-provider spend
+comparison is a `UNION ALL` over `google_ads_performance` + `meta_ads_performance`
+(rolled up on `dimensions` / channel), never a filter on one wide table.
 
-## No duplication on re-runs (already guaranteed)
+## No duplication on re-runs (guaranteed)
 
 Nothing extra is needed to "add only new data":
 
-- `report_rows` has `UNIQUE(connection_id, stream, record_key)` and every write
-  is `INSERT … ON CONFLICT DO UPDATE`. `record_key` is a deterministic
-  `sha256(stream + sorted primary-key values)`, so the same source row always
-  maps to the same warehouse row.
+- Every fact table has `UNIQUE(connection_id, stream, record_key)` and every
+  write is `INSERT … ON CONFLICT DO UPDATE`. `record_key` is a deterministic
+  `sha256(stream + sorted primary-key values)[:40]`, so the same source row
+  always maps to the same warehouse row. `ingested_at` is frozen on update; the
+  measure columns and JSON are overwritten with the restated values.
 - The per-`(connection, stream)` cursor lives in `sync_state`, only ever moves
-  forward, and is committed *after* the rows it covers are durably written.
+  forward (`advance_cursor`), and is committed *after* the rows it covers are
+  durably written. Concurrent commits (a manual "Sync now" landing mid-schedule)
+  race-retry onto the same row instead of failing.
 - Run 2+ re-fetches only `cursor − lookback_days` (default 3) onward. Analytics
   providers restate the last few days; those overlapping rows are **corrected**
   in place, not duplicated.
@@ -34,60 +50,63 @@ Nothing extra is needed to "add only new data":
   external_id)`.
 
 `full_refresh` still routes through the same upsert — it re-reads a wider window,
-it does not truncate. It will not delete rows that later vanish from the source.
+it does not truncate, and it will not delete rows that later vanish from the
+source.
 
-## Typed per-stream views
+## Scheduling
 
-`app/warehouse/views.py` generates one SQL view per `(connector, stream)` over
-`report_rows` / `ad_entities`, projecting the JSON into typed, named columns.
-A view is just a saved query, so it inherits the de-dup / incremental guarantees
-above — there is no second copy of the data.
+`SyncScheduler` (in-process, `SCHEDULER_ENABLED=true`) polls every
+`SCHEDULER_POLL_SECONDS` for connections whose `next_run_at` is due, claims each
+with a DB compare-and-swap lock, and runs up to `MAX_CONCURRENT_SYNCS` at once.
 
-- Name: `v_<short>_<stream>` — `ga4`, `gsc`, `gads`, `meta_ads`, `ig`.
-  e.g. `v_ga4_landing_pages`, `v_gsc_search_analytics_by_query`,
-  `v_gads_campaign_performance`, `v_ga4_entities`.
-- Every fact view carries `property_id` (= `resource_id`), `connection_id`,
-  `date`, `currency`, `synced_at`, `sync_run_id`, plus one column per
-  dimension/metric. One view serves every property — filter on `property_id`.
-- `warehouse_catalog` lists every `(view_name, connector_id, provider, stream,
-  grain, column_name, role)` so an agent / MCP tool can discover what is
-  queryable without dialect-specific `information_schema`. `role` ∈
-  `key | dimension | metric | measure | meta`.
+- `schedule_interval_seconds` on the connection sets a plain interval
+  (`next_run_at = now + interval`).
+- `config.daily_at` (`"HH:MM"`, with optional `config.daily_at_offset_minutes`
+  for a non-UTC wall clock) pins the run to a fixed time of day with **no drift**
+  — after each run `next_run_at` snaps to the next occurrence of that time.
+- Repeated failure backs off exponentially (capped 6h), ignoring `daily_at` so a
+  broken connection retries sooner than a full day.
 
-Views are rebuilt from the connector registry on every app start, so a new
-stream (a dict entry in a connector) gets its view automatically. To rebuild
-without a restart:
+Manual: `POST /api/v1/connections/{id}/sync`.
 
-```
-POST /api/v1/warehouse/rebuild-views      # auth: Bearer <token>
-python -m app.warehouse.views             # CLI (uses DATABASE_URL)
-```
+## Querying
 
-### Example
+There is no generated view layer — query the tables directly. The JSON columns
+are `jsonb` on Postgres, so dimensions read as `dimensions->>'channel_group'`.
 
 ```sql
 -- top entry pages by conversions, last 30 days
-SELECT landing_page, SUM(sessions) AS sessions, SUM(conversions) AS conversions
-FROM v_ga4_landing_pages
-WHERE property_id = '458037317'
-GROUP BY landing_page
+SELECT dimensions->>'landingPage' AS landing_page,
+       SUM(sessions) AS sessions, SUM(conversions) AS conversions
+FROM google_analytics_performance
+WHERE stream = 'landing_pages'
+  AND resource_id = '458037317'
+  AND date >= CURRENT_DATE - 30
+GROUP BY 1
 ORDER BY conversions DESC NULLS LAST
 LIMIT 20;
 
--- session quality by channel
-SELECT date, channel_group, device_category,
-       sessions, bounce_rate, engagement_rate, average_session_duration
-FROM v_ga4_session_quality
-WHERE property_id = '458037317' AND date >= DATE '2026-08-01';
+-- cross-provider daily spend
+SELECT date, 'google_ads' AS source, SUM(cost) AS spend
+FROM google_ads_performance WHERE stream = 'campaign_performance' GROUP BY date
+UNION ALL
+SELECT date, 'meta_ads', SUM(cost)
+FROM meta_ads_performance WHERE stream = 'campaign_insights' GROUP BY date
+ORDER BY date DESC;
 ```
 
-## Adding a promoted column
+The `GET /api/v1/connections/{id}/data` endpoint returns a tabular view of the
+right per-source table for a connection (see `COLUMN_CONFIGS` in
+`app/api/routers/connections.py`).
 
-1. Add the column to `ReportRow` in `app/models/warehouse.py` (nullable).
+## Adding a promoted measure column
+
+1. Add the column to the source's `*Performance` class in
+   `app/models/warehouse.py` (nullable).
 2. Add its name to `MEASURE_COLUMNS` in `app/sync/writer.py`.
-3. Map the provider metric → column in that connector's measure map
-   (`_MEASURE_MAP` in `app/connectors/google/analytics.py` / `ads.py`), and in
-   `_PROMOTED` in `app/warehouse/views.py`.
-4. `alembic revision --autogenerate` (add a JSON→column backfill in `upgrade()`
-   for rows already synced), then `alembic upgrade head`.
-5. Restart, or `POST /api/v1/warehouse/rebuild-views`.
+3. Have the connector put the value in `record.measures[<column>]` (its
+   `_MEASURE_MAP` or equivalent).
+4. `alembic revision --autogenerate -m "..."`, add `import app.models.base` to
+   the generated file if it references `UTCDateTime`, add a JSON→column backfill
+   in `upgrade()` for already-synced rows, then `alembic upgrade head`.
+5. Restart the app.

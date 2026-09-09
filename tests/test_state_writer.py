@@ -4,7 +4,7 @@ import pytest
 
 from app.connectors.base import EntityRecord, Record, StreamDefinition
 from app.connectors.validation import build_json_schema
-from app.models import AdEntity, Connection, OAuthIdentity, ReportRow, SkippedRecord
+from app.models import AdEntity, Connection, GoogleAnalyticsPerformance, OAuthIdentity, SkippedRecord
 from app.sync.state import commit_state, load_state, reset_state
 from app.sync.writer import DestinationWriter
 
@@ -97,7 +97,7 @@ async def test_writer_inserts_then_upserts_and_counts(session, org):
     r2 = await writer.write_records(FACT_STREAM, recs)
     assert (r2.inserted, r2.updated) == (0, 2)
 
-    rows = (await session.execute(ReportRow.__table__.select())).all()
+    rows = (await session.execute(GoogleAnalyticsPerformance.__table__.select())).all()
     assert len(rows) == 2
     aug1 = next(row for row in rows if str(row.date) == "2026-08-01")
     assert aug1.sessions == 99 and aug1.users == 7

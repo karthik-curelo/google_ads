@@ -619,7 +619,28 @@ def _next_run_at(conn: Connection, now: datetime, outcome: SyncOutcome) -> datet
         # hammer the provider every interval.
         backoff = min(interval * (2 ** min(conn.consecutive_failures, 6)), 6 * 3600)
         return now + timedelta(seconds=max(interval, backoff))
+    # `config.daily_at` ("HH:MM", optionally with `config.daily_at_offset_minutes`
+    # for a non-UTC wall clock) pins the run to a fixed time of day with no drift.
+    daily_at = (conn.config or {}).get("daily_at")
+    if daily_at:
+        pinned = _next_daily_at(now, daily_at, (conn.config or {}).get("daily_at_offset_minutes", 0))
+        if pinned is not None:
+            return pinned
     return now + timedelta(seconds=interval)
+
+
+def _next_daily_at(now_utc: datetime, hhmm: str, offset_minutes: int) -> datetime | None:
+    """Next occurrence of wall-clock `hhmm` in the given UTC offset, as aware UTC."""
+    try:
+        hh, mm = (int(part) for part in hhmm.split(":", 1))
+        off = timedelta(minutes=int(offset_minutes))
+    except (ValueError, TypeError):
+        return None
+    local = (now_utc.astimezone(UTC) + off).replace(tzinfo=None)  # naive local wall time
+    target = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return (target - off).replace(tzinfo=UTC)
 
 
 __all__ = ["RunProgress", "SyncOutcome", "run_connection"]

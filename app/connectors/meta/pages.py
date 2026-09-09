@@ -295,7 +295,10 @@ class FacebookPagesConnector(MetaConnector):
                 date=to_date(day),
                 dimensions={"date": day},
                 metrics=nums,
-                measures={"impressions": nums.get("page_impressions")},
+                measures={
+                    "impressions": nums.get("page_impressions"),
+                    "reach": nums.get("page_impressions_unique"),
+                },
                 raw={"date": day, "metrics": values},
             )
 
@@ -330,7 +333,11 @@ class FacebookPagesConnector(MetaConnector):
                 date=ts,
                 dimensions={"post_id": post_id},
                 metrics={**values, **nums},
-                measures={"impressions": nums.get("post_impressions")},
+                measures={
+                    "impressions": nums.get("post_impressions"),
+                    "reach": nums.get("post_impressions_unique"),
+                    "clicks": nums.get("post_clicks"),
+                },
                 raw={"post_id": post_id, "insights": values, "post": post},
             )
 
