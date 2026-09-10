@@ -47,6 +47,44 @@ def test_daily_at_bad_input_returns_none():
     assert _next_daily_at(now, "10:00", "xx") is None
 
 
+# --- multiple times/day (a list of "HH:MM") --------------------------------
+
+
+def test_daily_at_list_picks_soonest_of_multiple_today():
+    # 08:30 IST — both 10:00 and 17:00 are still ahead today; 10:00 wins.
+    now = _at("2026-09-09T03:00:00")
+    assert _next_daily_at(now, ["10:00", "17:00"], IST) == _at("2026-09-09T04:30:00")
+
+
+def test_daily_at_list_one_time_passed_other_still_today():
+    # 11:00 IST — 10:00 has passed (rolls to tomorrow), 17:00 hasn't (stays
+    # today) — the next run must be *today's* 17:00, not tomorrow's 10:00.
+    now = _at("2026-09-09T05:30:00")  # 11:00 IST
+    assert _next_daily_at(now, ["10:00", "17:00"], IST) == _at("2026-09-09T11:30:00")  # 17:00 IST
+
+
+def test_daily_at_list_both_passed_rolls_to_tomorrows_earliest():
+    # 20:00 IST — both 10:00 and 17:00 are gone for today; tomorrow's 10:00 wins.
+    now = _at("2026-09-09T14:30:00")  # 20:00 IST
+    assert _next_daily_at(now, ["10:00", "17:00"], IST) == _at("2026-09-10T04:30:00")
+
+
+def test_daily_at_list_ignores_bad_entries_but_uses_good_ones():
+    now = _at("2026-09-09T03:00:00")  # 08:30 IST
+    assert _next_daily_at(now, ["not-a-time", "10:00"], IST) == _at("2026-09-09T04:30:00")
+
+
+def test_daily_at_list_all_bad_returns_none():
+    now = _at("2026-09-09T03:00:00")
+    assert _next_daily_at(now, ["nope", "also-nope"], IST) is None
+
+
+def test_next_run_at_uses_daily_at_list():
+    conn = _conn(config={"daily_at": ["10:00", "17:00"], "daily_at_offset_minutes": IST})
+    now = _at("2026-09-09T05:30:00")  # 11:00 IST — 10:00 passed, 17:00 hasn't
+    assert _next_run_at(conn, now, _OK) == _at("2026-09-09T11:30:00")  # 17:00 IST today
+
+
 def _conn(**kw):
     defaults = {"enabled": True, "schedule_interval_seconds": 86400, "config": {}, "consecutive_failures": 0}
     return SimpleNamespace(**{**defaults, **kw})

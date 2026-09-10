@@ -619,8 +619,9 @@ def _next_run_at(conn: Connection, now: datetime, outcome: SyncOutcome) -> datet
         # hammer the provider every interval.
         backoff = min(interval * (2 ** min(conn.consecutive_failures, 6)), 6 * 3600)
         return now + timedelta(seconds=max(interval, backoff))
-    # `config.daily_at` ("HH:MM", optionally with `config.daily_at_offset_minutes`
-    # for a non-UTC wall clock) pins the run to a fixed time of day with no drift.
+    # `config.daily_at` ("HH:MM", or a list of them for multiple runs/day,
+    # optionally with `config.daily_at_offset_minutes` for a non-UTC wall
+    # clock) pins the run to a fixed time of day with no drift.
     daily_at = (conn.config or {}).get("daily_at")
     if daily_at:
         pinned = _next_daily_at(now, daily_at, (conn.config or {}).get("daily_at_offset_minutes", 0))
@@ -629,18 +630,30 @@ def _next_run_at(conn: Connection, now: datetime, outcome: SyncOutcome) -> datet
     return now + timedelta(seconds=interval)
 
 
-def _next_daily_at(now_utc: datetime, hhmm: str, offset_minutes: int) -> datetime | None:
-    """Next occurrence of wall-clock `hhmm` in the given UTC offset, as aware UTC."""
+def _next_daily_at(now_utc: datetime, hhmm: str | list[str], offset_minutes: int) -> datetime | None:
+    """Next occurrence of one or more wall-clock times ("HH:MM") in the given
+    UTC offset, as aware UTC. A single string still runs the connection once a
+    day; a list (e.g. ["10:00", "17:00"]) runs it that many times/day, each
+    pinned independently — whichever of the given times is soonest wins, and a
+    time already passed today rolls to tomorrow on its own, so e.g. at 11:00
+    with ["10:00", "17:00"] the next run is 17:00 today, not 10:00 tomorrow."""
+    times = [hhmm] if isinstance(hhmm, str) else list(hhmm)
     try:
-        hh, mm = (int(part) for part in hhmm.split(":", 1))
         off = timedelta(minutes=int(offset_minutes))
     except (ValueError, TypeError):
         return None
-    local = (now_utc.astimezone(UTC) + off).replace(tzinfo=None)  # naive local wall time
-    target = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if target <= local:
-        target += timedelta(days=1)
-    return (target - off).replace(tzinfo=UTC)
+    local_now = (now_utc.astimezone(UTC) + off).replace(tzinfo=None)  # naive local wall time
+    candidates: list[datetime] = []
+    for t in times:
+        try:
+            hh, mm = (int(part) for part in t.split(":", 1))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        target = local_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= local_now:
+            target += timedelta(days=1)
+        candidates.append((target - off).replace(tzinfo=UTC))
+    return min(candidates) if candidates else None
 
 
 __all__ = ["RunProgress", "SyncOutcome", "run_connection"]

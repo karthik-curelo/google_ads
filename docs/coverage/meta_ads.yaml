@@ -1,6 +1,6 @@
 source: meta_ads
 connector_id: meta_ads
-generated: 2026-09-07
+generated: 2026-09-09
 has_connector: true
 refresh: "hand-maintained from Marketing API Insights reference; pin to META_API_VERSION"
 review_by: 2026-12-01

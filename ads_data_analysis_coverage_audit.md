@@ -4,6 +4,23 @@
 **Scope:** Google Ads, Meta Ads, Google Analytics 4 (GA4), Google Search Console (GSC)  
 **Objective:** Verify whether the currently extracted API data is sufficient to reproduce the analysis/report types represented in the supplied Google Ads export screenshot and to support reliable cross-channel performance analysis.
 
+> **Update (2026-09-09, same day): most P0 Google Ads gaps are now implemented and
+> live-verified** on customer `9232673741`. New streams in
+> `app/connectors/google/ads.py` (13 → 23):
+> `landing_page_performance`, `user_location_performance` (matched vs targeted),
+> `campaign_hourly_performance` (`segments.hour` + `segments.day_of_week`),
+> `ad_schedule_criteria`, `campaign_bid_modifiers`, `ad_group_bid_modifiers`,
+> `dynamic_search_term_performance`, `campaign_search_term_performance` (PMax),
+> `asset_groups`, `shopping_performance`. GA4 `google_ads_campaigns` now carries
+> `sessionGoogleAdsCampaignId` / `AdGroupId` / `Keyword` for ID-based joins (§4.1);
+> Meta rows now stamp `attribution_windows` into `dimensions` (§5.4).
+> **Still open, deliberately:** Auction Insights (no Google Ads API resource —
+> platform ceiling, §2.5); content/placement views (Display/Video only, this
+> account is Search); `change_event`; the Meta per-`action_type` child fact table
+> (§5.1 — new table + migration, scheduled as its own change). Current field-level
+> list: `docs/coverage/EXTRACTION_INVENTORY.md` §3; machine diff:
+> `docs/coverage/GAP_REPORT.md`.
+
 ## Executive conclusion
 
 The current extraction is a strong foundation, but it is **not yet complete for analysis parity** with the report types visible in the screenshot.

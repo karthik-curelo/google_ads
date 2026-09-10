@@ -1,0 +1,34 @@
+[Unit]
+Description=Marketing Connector Platform (FastAPI + in-process sync scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two if you deploy under a different user/path.
+User=connectors
+WorkingDirectory=/opt/marketing-connectors
+# Deliberately NOT using systemd's EnvironmentFile= here: the app already
+# loads .env itself (pydantic-settings -> python-dotenv, which correctly
+# strips this repo's inline "# comment" annotations). systemd's own
+# EnvironmentFile parser does NOT strip inline comments, so pointing it at
+# the same file would silently corrupt values like `true   # exposes /docs`.
+# All this unit needs is the right working directory containing .env.
+ExecStart=/opt/marketing-connectors/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+# A hung sync or DB connection shouldn't be able to wedge the unit forever.
+TimeoutStopSec=30
+
+# Logs go to the journal — view with: journalctl -u marketing-connectors -f
+StandardOutput=journal
+StandardError=journal
+
+# Light sandboxing; loosen if it fights with a specific deploy setup.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/marketing-connectors
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

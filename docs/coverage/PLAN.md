@@ -103,6 +103,38 @@ before/after and `verified_in_db` state:
   expanded metrics (`all_conversions*`, `view_through_conversions`,
   `cost_per_conversion`, `average_cpm`, impression-share on campaign/ad_group
   only). *(live-verified — 13/13 streams; 88k search-term rows)*
+- **Google Ads (round 2, 2026-09-09):** screenshot-report parity — added
+  `landing_page_performance`, `user_location_performance` (matched vs targeted),
+  `campaign_hourly_performance` (hour + day-of-week), `ad_schedule_criteria`,
+  `campaign_bid_modifiers`, `ad_group_bid_modifiers`,
+  `dynamic_search_term_performance`, `campaign_search_term_performance` (PMax),
+  `asset_groups`, `shopping_performance`. *(live-verified on customer 9232673741)*
+- **Google Ads (round 3 — strict audit, 2026-09-09):** corrected earlier
+  misclassifications after checking v25 docs + probing the live account.
+  13 → **29 streams**.
+  - **Auction Insights is NOT "no API" — it is access-restricted.**
+    `segments.auction_insight_domain` + 6 `metrics.auction_insight_search_*` are
+    in the v25 schema; this developer token gets HTTP 403 `METRIC_ACCESS_DENIED`
+    ("the developer doesn't have access to metrics") — a Google-side access
+    restriction on these metrics, requested through Google. Added
+    `auction_insight_campaign_performance` / `_ad_group_performance` with a
+    `permission_optional` guard → 0-row success today, auto-populate once access
+    is granted. Class: **permission_gated**.
+  - **Placements are NOT "Display-only, no data" here.** `group_placement_view` +
+    `detail_placement_view` return live YouTube channel/video placement rows; and
+    **PMax placements are a separate resource** — `performance_max_placement_view`
+    (impressions-only per Google) also returns live data. Added
+    `group_placement_performance`, `detail_placement_performance`,
+    `performance_max_placement_performance`.
+  - **Asset-Wise CTR** — `ad_group_ad_asset_view` verified (per-asset
+    impressions/clicks/ctr/cost/conversions). Added
+    `ad_group_ad_asset_performance`. (PMax per-asset *metrics* are not exposed by
+    Google — a documented API limitation.)
+  - `change_event` verified working with real data → documented **P2** (not in
+    screenshot scope).
+  - Third data bug fixed: `search_term_performance` pk gained
+    `segments.search_term_match_type` (BROAD vs PHRASE of the same term was
+    collapsing, ~263 rows/run silently dropped).
 - **Meta Ads:** expanded insight fields (video quartiles, thruplay, unique/
   outbound clicks, rankings, ROAS); breakdown streams
   (`ad_insights_by_age_gender`, `_by_platform`, `_by_country`, `_by_region`,

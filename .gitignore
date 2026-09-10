@@ -13,5 +13,7 @@ credentials.json
 # Local database / exports
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3
 *.csv

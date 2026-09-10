@@ -116,7 +116,7 @@ Typed measure columns: `sessions`, `users`, `new_users`, `page_views`,
 | `traffic_acquisition` | `date, sessionDefaultChannelGroup, sessionMedium, sessionSource` | |
 | `campaign_attribution` | `date, sessionCampaignName, sessionDefaultChannelGroup, sessionMedium, sessionSource` | |
 | `first_user_acquisition` | `date, firstUser{CampaignName,DefaultChannelGroup,Medium,Source}` | acquisition (first touch) |
-| `google_ads_campaigns` | `date, sessionGoogleAdsCampaignName, sessionGoogleAdsAdGroupName` | GA4's view of Ads |
+| `google_ads_campaigns` | `date, sessionGoogleAdsCampaignId, sessionGoogleAdsCampaignName, sessionGoogleAdsAdGroupId, sessionGoogleAdsAdGroupName, sessionGoogleAdsKeyword` | GA4's view of Ads; the `*Id` keys join to `google_ads_performance.dimensions->>'campaign.id'` / `'ad_group.id'` |
 | `landing_pages` | `date, landingPage, sessionDefaultChannelGroup` | |
 | `page_performance` | `date, pagePath` | |
 | `page_title` | `date, pageTitle, pagePathPlusQueryString` | largest stream (~32k rows) |
@@ -170,17 +170,27 @@ Typed measure columns: `impressions`, `clicks`, `cost`, `currency`, `conversions
 |---|---|---|
 | `campaign_performance` | `campaign.id, campaign.name, segments.date` | + impression-share metrics |
 | `campaign_device_performance` | `campaign.id, segments.date, segments.device` | |
+| `campaign_hourly_performance` | `campaign.id, segments.date, segments.day_of_week, segments.hour` | hour-of-day / day-of-week performance |
 | `ad_group_performance` | `ad_group.id, ad_group.name, campaign.id, segments.date` | + impression-share (no budget-lost) |
 | `ad_performance` | `ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group.id, campaign.id, segments.date` | |
 | `keyword_performance` | `ad_group_criterion.criterion_id, .keyword.text, .keyword.match_type, ad_group.id, campaign.id, segments.date` | |
-| `search_term_performance` | `search_term_view.search_term, .status, segments.search_term_match_type, ad_group.id, campaign.id, segments.date` | largest (~13k) |
+| `search_term_performance` | `search_term_view.search_term, .status, segments.search_term_match_type, ad_group.id, campaign.id, segments.date` | largest; excludes PMax |
+| `campaign_search_term_performance` | `campaign_search_term_view.search_term, campaign.id, segments.date` | Performance Max search terms |
+| `dynamic_search_term_performance` | `dynamic_search_ads_search_term_view.search_term, .headline, .landing_page, ad_group.id, campaign.id, segments.date` | DSA auto-targeting |
+| `landing_page_performance` | `landing_page_view.unexpanded_final_url, campaign.id, segments.date` | paid landing-page metrics |
+| `expanded_landing_page_performance` | `expanded_landing_page_view.expanded_final_url, campaign.id, segments.date` | after URL expansion |
 | `age_range_performance` | `ad_group_criterion.age_range.type, ad_group.id, campaign.id, segments.date` | |
 | `gender_performance` | `ad_group_criterion.gender.type, ad_group.id, campaign.id, segments.date` | |
-| `geo_performance` | `geographic_view.country_criterion_id, .location_type, campaign.id, segments.date` | |
+| `geo_performance` | `geographic_view.country_criterion_id, .location_type, campaign.id, segments.date` | **targeted** locations |
+| `user_location_performance` | `user_location_view.country_criterion_id, .targeting_location, campaign.id, segments.date` | **physical/interest** location; `targeting_location` bool = was it targeted |
+| `shopping_performance` | `segments.product_item_id, .product_title, .product_brand, .product_type_l1, campaign.id, segments.date` | Shopping/PMax products (empty on Search-only) |
 
-Campaign / ad-group / ad / keyword / conversion-action *names, status, budgets* live in
-`ad_entities` (`provider='google'`), joined on `dimensions->>'campaign.id' = external_id`
-where `level='campaign'`, etc.
+Config/criterion snapshots go to `ad_entities` (`provider='google'`):
+`campaign` / `ad_group` / `ad_group_ad` / `conversion_action` (names, status, budgets),
+plus `ad_schedule` (day/hour blocks + bid modifier), `campaign_criterion` &
+`ad_group_bid_modifier` (device/location/schedule bid adjustments), `asset_group`
+(Performance Max). Join on `dimensions->>'campaign.id' = external_id` where
+`level='campaign'`, etc.
 
 ### 5.4 `meta_ads_performance`
 

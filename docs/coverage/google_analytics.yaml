@@ -1,6 +1,6 @@
 source: google_analytics
 connector_id: google_analytics
-generated: 2026-09-07
+generated: 2026-09-09
 has_connector: true
 refresh: "GET https://analyticsdata.googleapis.com/v1beta/properties/{id}/metadata"
 review_by: 2026-12-01
@@ -58,7 +58,7 @@ sections:
     "sessionManualTerm": missing
     "sessionGoogleAdsAdGroupName": implemented
     "sessionGoogleAdsCampaignName": implemented
-    "sessionGoogleAdsKeyword": missing
+    "sessionGoogleAdsKeyword": implemented
     "firstUserDefaultChannelGroup": implemented
     "firstUserSource": implemented
     "firstUserMedium": implemented
@@ -122,8 +122,8 @@ sections:
     "returnOnAdSpend": implemented
     "customEvent:*": partial
 tally:
-  implemented: 61
-  missing: 41
+  implemented: 62
+  missing: 40
   partial: 3
   unsupported: 7
-coverage_pct: 58
+coverage_pct: 59

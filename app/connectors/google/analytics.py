@@ -247,8 +247,17 @@ _REPORTS: dict[str, tuple[list[str], list[str], list[str]]] = {
     ),
     # GA4-observed Google Ads spend/return by campaign + ad group (needs the
     # GA4 <-> Google Ads account link).
+    # Ads-side IDs (not just names) so this joins to google_ads_performance on
+    # campaign.id / ad_group.id instead of fragile name matching.
     "google_ads_campaigns": (
-        ["date", "sessionGoogleAdsCampaignName", "sessionGoogleAdsAdGroupName"],
+        [
+            "date",
+            "sessionGoogleAdsCampaignId",
+            "sessionGoogleAdsCampaignName",
+            "sessionGoogleAdsAdGroupId",
+            "sessionGoogleAdsAdGroupName",
+            "sessionGoogleAdsKeyword",
+        ],
         [
             "advertiserAdCost",
             "advertiserAdClicks",
@@ -258,7 +267,7 @@ _REPORTS: dict[str, tuple[list[str], list[str], list[str]]] = {
             "totalRevenue",
             "returnOnAdSpend",
         ],
-        ["date", "sessionGoogleAdsCampaignName", "sessionGoogleAdsAdGroupName"],
+        ["date", "sessionGoogleAdsCampaignId", "sessionGoogleAdsAdGroupId", "sessionGoogleAdsKeyword"],
     ),
 }
 

@@ -34,7 +34,7 @@ Per-provider capability inventories: `_reference/<source>.json`.
 | `traffic_acquisition` | date, sessionDefaultChannelGroup, sessionSource, sessionMedium | sessions, engagedSessions, activeUsers, newUsers, bounceRate, averageSessionDuration, conversions, totalRevenue |
 | `campaign_attribution` | date, sessionCampaignName, sessionSource, sessionMedium, sessionDefaultChannelGroup | sessions, activeUsers, newUsers, engagedSessions, conversions, totalRevenue |
 | `first_user_acquisition` | date, firstUserSource, firstUserMedium, firstUserCampaignName, firstUserDefaultChannelGroup | newUsers, totalUsers, sessions, engagedSessions, conversions, totalRevenue, transactions, totalPurchasers, firstTimePurchasers |
-| `google_ads_campaigns` | date, sessionGoogleAdsCampaignName, sessionGoogleAdsAdGroupName | advertiserAdCost, advertiserAdClicks, advertiserAdImpressions, sessions, conversions, totalRevenue, returnOnAdSpend |
+| `google_ads_campaigns` | date, sessionGoogleAdsCampaignId, sessionGoogleAdsCampaignName, sessionGoogleAdsAdGroupId, sessionGoogleAdsAdGroupName, sessionGoogleAdsKeyword | advertiserAdCost, advertiserAdClicks, advertiserAdImpressions, sessions, conversions, totalRevenue, returnOnAdSpend |
 | `landing_pages` | date, landingPage, sessionDefaultChannelGroup | sessions, activeUsers, newUsers, engagedSessions, userEngagementDuration, conversions, totalRevenue |
 | `page_performance` | date, pagePath | screenPageViews, activeUsers, engagedSessions, userEngagementDuration |
 | `page_title` | date, pageTitle, pagePathPlusQueryString | screenPageViews, activeUsers, engagedSessions, userEngagementDuration |
@@ -53,7 +53,7 @@ Per-provider capability inventories: `_reference/<source>.json`.
 
 **Not pulled (GA4 has it, we don't):** week / hour / year / month / dayOfWeek date
 parts; `sessionSourceMedium`, `firstUserSourceMedium`, `sessionCampaignId`,
-`sessionGoogleAdsKeyword`, `landingPagePlusQueryString`, `fullPageUrl`, `hostName`,
+`landingPagePlusQueryString`, `fullPageUrl`, `hostName`,
 `audienceName`, `transactionId`; ratio metrics `sessionsPerUser`,
 `eventsPerSession`, `eventCountPerUser`, `userKeyEventRate`, `sessionKeyEventRate`,
 `averageRevenuePerUser`, `averagePurchaseRevenue`, `cartToViewRate`,
@@ -116,7 +116,11 @@ ad / keyword / geo / age / gender resources — Google rejects them there.)*
 `conversions`, `conversion_value`. `average_cpc` / `average_cpm` /
 `cost_per_conversion` stay in `metrics` jsonb only.
 
-### Entity streams (→ `ad_entities`)
+**`_LEAN_METRICS`** (used by the resources added 2026-09-09, where the full base
+set risks a single-field rejection): impressions, clicks, cost_micros, conversions,
+conversions_value, all_conversions, all_conversions_value, ctr, average_cpc.
+
+### Entity / config-snapshot streams (→ `ad_entities`)
 
 | Stream | Resource | Fields selected |
 |---|---|---|
@@ -124,6 +128,10 @@ ad / keyword / geo / age / gender resources — Google rejects them there.)*
 | `ad_groups` | ad_group | ad_group.id, name, status, type, cpc_bid_micros, campaign.id, campaign.name |
 | `ads` | ad_group_ad | ad_group_ad.ad.id, name, type, status, final_urls, ad_strength, ad_group.id, campaign.id |
 | `conversion_actions` | conversion_action | conversion_action.id, name, status, type, category, counting_type, value_settings.default_value |
+| `ad_schedule_criteria` *(new)* | campaign_criterion `WHERE type=AD_SCHEDULE` | campaign.id, criterion_id, status, bid_modifier, ad_schedule.{day_of_week, start_hour, start_minute, end_hour, end_minute} |
+| `campaign_bid_modifiers` *(new)* | campaign_criterion | campaign.id, criterion_id, type, status, bid_modifier, device.type |
+| `ad_group_bid_modifiers` *(new)* | ad_group_bid_modifier | campaign.id, ad_group.id, criterion_id, bid_modifier, device.type |
+| `asset_groups` *(new)* | asset_group | campaign.id, asset_group.id, name, status, final_urls (Performance Max) |
 
 ### Performance streams (daily facts)
 
@@ -131,20 +139,118 @@ ad / keyword / geo / age / gender resources — Google rejects them there.)*
 |---|---|---|---|
 | `campaign_performance` | campaign | campaign.id, campaign.name | base + 3 impression-share |
 | `campaign_device_performance` | campaign | campaign.id, campaign.name, segments.device | base |
+| `campaign_hourly_performance` *(new)* | campaign | segments.day_of_week, segments.hour, campaign.id, campaign.name | lean |
 | `ad_group_performance` | ad_group | campaign.id, ad_group.id, ad_group.name | base + 2 impression-share |
 | `ad_performance` | ad_group_ad | campaign.id, ad_group.id, ad.id, ad.name | base |
 | `keyword_performance` | keyword_view | campaign.id, ad_group.id, criterion_id, keyword.text, keyword.match_type | base |
-| `search_term_performance` | search_term_view | campaign.id, ad_group.id, search_term, search_term_view.status, segments.search_term_match_type | base |
-| `geo_performance` | geographic_view | campaign.id, country_criterion_id, location_type | base |
+| `search_term_performance` | search_term_view | campaign.id, ad_group.id, search_term, status, segments.search_term_match_type, **segments.keyword.ad_group_criterion, segments.keyword.info.{text,match_type}** *(added 2026-09-09 — the triggering keyword, see below)* | base |
+| `campaign_search_term_performance` *(new)* | campaign_search_term_view | campaign.id, search_term (Performance Max search terms) | lean |
+| `dynamic_search_term_performance` *(new)* | dynamic_search_ads_search_term_view | campaign.id, ad_group.id, search_term, headline, landing_page, has_negative_keyword, has_matching_keyword | lean |
+| `landing_page_performance` *(new)* | landing_page_view | campaign.id, campaign.name, unexpanded_final_url | lean |
+| `geo_performance` | geographic_view | campaign.id, country_criterion_id, location_type (targeted location) | base |
+| `user_location_performance` *(new)* | user_location_view | campaign.id, country_criterion_id, targeting_location (physical/interest location) | lean |
 | `age_range_performance` | age_range_view | campaign.id, ad_group.id, age_range.type | base |
 | `gender_performance` | gender_view | campaign.id, ad_group.id, gender.type | base |
+| `shopping_performance` *(new)* | shopping_performance_view | campaign.id, segments.product_item_id, product_title, product_brand, product_type_l1 | lean |
+| `group_placement_performance` *(new)* | group_placement_view | campaign.id, group_placement_view.{placement, display_name, placement_type, target_url} — `WHERE metrics.impressions >= 5` (long-tail floor) | lean |
+| `detail_placement_performance` *(new)* | detail_placement_view | campaign.id, detail_placement_view.{placement, display_name, placement_type, group_placement_target_url} — `WHERE metrics.impressions >= 5` | lean |
+| `performance_max_placement_performance` *(new)* | performance_max_placement_view | campaign.id, resource_name, placement, display_name, placement_type, target_url — **PMax is a separate resource**; Google exposes `metrics.impressions` only here | impressions only |
+| `ad_group_ad_asset_performance` *(new)* | ad_group_ad_asset_view | campaign.id, ad_group.id, ad_group_ad, asset, field_type, performance_label, asset.type | impressions, clicks, ctr, cost_micros, conversions, conversions_value |
+| `asset_group_asset_performance` *(new)* | asset_group_asset | campaign.id, asset_group.id, asset_group.name, asset_group_asset.resource_name, asset_group_asset.asset, asset_group_asset.field_type, asset_group_asset.status, asset.type — the **PMax half** of Asset-Wise CTR (`ad_group_ad_asset_view` structurally excludes PMax) | impressions, clicks, ctr, cost_micros, conversions, conversions_value |
+| `auction_insight_campaign_performance` *(new, permission-gated)* | campaign | campaign.id, campaign.name, segments.auction_insight_domain | 6× `metrics.auction_insight_search_*` (ratios, JSON only) |
+| `auction_insight_ad_group_performance` *(new, permission-gated)* | ad_group | campaign.id, ad_group.id, ad_group.name, segments.auction_insight_domain | 6× `metrics.auction_insight_search_*` |
+| `campaign_conversion_action_performance` *(new 2026-09-09)* | campaign | campaign.id, campaign.name, **segments.conversion_action** (stable ID), segments.conversion_action_name, segments.conversion_action_category | **only** `metrics.conversions`, `metrics.conversions_value` — deliberately excludes impressions/clicks/cost, which are not additive across this segment |
 
-**Not pulled (Google Ads has it, we don't):** `segments.ad_network_type`,
-`segments.conversion_action_name`, `segments.day_of_week`, `segments.click_type`;
-`metrics.video_views`, `metrics.interactions`; resources `asset`, `asset_group`
-(Performance Max), `shopping_performance_view`, `label`, `change_event`. Coverage
-~73%. None of the gaps block standard PPC reporting; add a stream dict in
-`_PERF_STREAMS` if Performance Max or Shopping is needed.
+### Search-term → triggering-keyword (added 2026-09-09)
+
+`search_term_performance` now requests `segments.keyword.ad_group_criterion` /
+`.info.text` / `.info.match_type` alongside the existing search-term fields.
+Live-verified on customer 9232673741: the same search term in the same ad
+group can legitimately be triggered by **more than one keyword** (4,634
+distinct `(search_term, ad_group)` pairs do this in the current 33-day
+backfill; e.g. "mri near me" under one ad group is triggered by two separate
+keyword criteria). Without the keyword segment, Google pre-aggregates these
+into a single row; requesting it decomposes them correctly (100,837 rows vs.
+~97,300 under the old grain for the same window). `segments.keyword.
+ad_group_criterion` (the resource name, format `adGroupCriteria/<ad_group_id>
+~<criterion_id>`) therefore joined the primary key — it is always populated
+on this account (0/100,837 null) but the mapping code preserves an empty-
+string fallback for the case where Google omits the segment, so a future
+unresolved-keyword row cannot silently collapse onto a resolved one.
+
+### Conversion-action-level performance (added 2026-09-09)
+
+A **separate, normalized** stream — `campaign_performance`'s own
+`conversions`/`conversion_value` are untouched (still an aggregate, same
+grain, same upsert key, zero regression risk). `campaign_conversion_action_
+performance` adds `segments.conversion_action(_name/_category)` to answer
+"how many conversions were Purchases vs. Leads vs. Phone Calls", joined to
+the existing `conversion_actions` entity table (`ad_entities`, level=
+`conversion_action`, 78 definitions) by the **stable numeric ID** embedded in
+`segments.conversion_action`'s resource name — not by the mutable action
+name. Metrics are deliberately limited to `conversions`/`conversions_value`:
+`impressions`/`clicks`/`cost_micros` are **not** decomposable by conversion
+action (Google repeats the whole campaign-day's value on every action row),
+so including them here would silently double/triple-count spend on any
+campaign-day with more than one active conversion action. Live-verified
+reconciliation against `campaign_performance`'s aggregate: 99/102 (date,
+campaign) pairs match exactly; the 3 that don't are the 2 most recent days
+(today + yesterday) with small deltas (<3 conversions), consistent with
+Google's normal conversion-attribution settling lag — not a bug, and it
+self-corrects on the next lookback re-fetch like every other still-settling
+metric on this platform. Value reconciled 102/102 exactly.
+
+**Maps to the Google Ads UI reports:** Campaign / Ad group / Ad / Search keyword /
+Search terms → the matching perf streams. Ad schedule + day/hour →
+`ad_schedule_criteria` × `campaign_hourly_performance`. Matched locations →
+`user_location_performance`. Landing page → `landing_page_performance`. Dynamic ad
+target → `dynamic_search_term_performance`. Advanced bid adjustment →
+`campaign_bid_modifiers` + `ad_group_bid_modifiers`. Asset / PMax → `asset_groups`,
+`campaign_search_term_performance`, `shopping_performance`. **Asset-Wise CTR** →
+`ad_group_ad_asset_performance` (Search/Display/Video) + `asset_group_asset_performance`
+(PMax). **Targeted content / placements** →
+`group_placement_performance` + `detail_placement_performance` (Display/Video) +
+`performance_max_placement_performance` (PMax — separate resource); all
+live-verified with YouTube placement data on customer 9232673741. **Auction
+Insights** → `auction_insight_campaign_performance` / `_ad_group_performance`.
+
+**Auction Insights — the exact status.** `segments.auction_insight_domain` and the
+six `metrics.auction_insight_search_*` fields **are** in the v25 schema
+(selectable on `campaign`, `ad_group`, `keyword_view`). On this developer token
+they return `HTTP 403 authorizationError = METRIC_ACCESS_DENIED` ("the developer
+doesn't have access to metrics: …") — verified against customer 9232673741,
+2026-09-09. That is a Google-side access restriction on these specific metrics,
+requested through Google; it is **not** an empty result. *(No claim is made here
+about whether that access programme is open or closed — only the 403 is verified
+first-hand.)* The two streams are implemented and carry `permission_optional`:
+the 403 is caught → clean **0-row success**, and they begin returning data the
+moment the token is granted access. So this is **permission-gated**, like
+Instagram `instagram_manage_insights` — *not* "no API resource".
+
+**PMax per-asset metrics — corrected.** An earlier pass of this document
+claimed Google does not expose per-asset impressions/clicks for Performance
+Max. That was wrong: `ad_group_ad_asset_performance` (resource
+`ad_group_ad_asset_view`) covers Search/Display/Video RSA assets, but PMax has
+no `ad_group_ad` at all, so that view structurally can't include it — a
+**different** resource, `asset_group_asset`, carries real per-asset metrics
+(impressions/clicks/ctr/cost/conversions) for assets inside PMax asset
+groups. Live-verified 2026-09-09 against customer 9232673741 (which runs 7
+real PMax asset groups): implemented as `asset_group_asset_performance`,
+2,205 rows, 0 skips. `asset_group_asset` has no `performance_label` field
+(that's `ad_group_ad_asset_view`-only) — the coarser
+`asset_group_top_combination_view` combinations report remains a separate,
+still-not-pulled, lower-priority resource (see "Still not pulled" below).
+
+**Still not pulled:** `segments.ad_network_type` / `segments.click_type`;
+`metrics.video_views` / `metrics.interactions`; `managed_placement_view` (thin —
+only `resource_name`; 0 rows here; the group/detail placement views carry the
+data); `topic_view` (Display topic targeting — not used by this account);
+`change_event` (change history — **verified working with real data**, but no
+change-history report in the screenshot scope → P2, ready-to-drop spec in
+`GAP_REPORT_ADDENDUM.md`); `label`; `asset_group_top_combination_view` (the
+Combinations report — which asset *combinations* Google served together —
+distinct from and coarser than the per-asset metrics `asset_group_asset_performance`
+already covers; not in the screenshot scope).
 
 ---
 
@@ -264,8 +370,8 @@ For every `campaign` / `ad_group` / `adset` / `ad` / `keyword` / `creative` /
 |---|---|---|---|
 | Google Analytics 4 | 20 (+1 configurable) | ~58% | date-part dims, ratio metrics (derivable), un-configured custom dims/metrics |
 | Google Search Console | 8 (+per search-type) | 100% | none (API has no more) |
-| Google Ads | 13 | ~73% | Performance Max / Shopping resources, `video_views`, `interactions`, a few segments |
-| Meta Ads | 13 | ~92% | per-`action_type` columns, extra action/hourly breakdowns |
+| Google Ads | 31 | ~96% | Auction Insights (access-restricted, implemented+dormant), `change_event` (P2), `managed_placement_view` (thin), `topic_view`, `asset_group_top_combination_view`, a few diagnostic segments |
+| Meta Ads | 13 | ~92% | per-`action_type` child table, extra action/hourly breakdowns |
 | Instagram | 6 | 100% of reference | blocked on App Review, not code |
 | Facebook Pages | 4 | 100% of reference | blocked on Page role, not code |
 

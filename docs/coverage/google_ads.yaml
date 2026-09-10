@@ -1,6 +1,6 @@
 source: google_ads
 connector_id: google_ads
-generated: 2026-09-07
+generated: 2026-09-09
 has_connector: true
 refresh: "SELECT name, category, selectable, selectable_with FROM google_ads_field  (GoogleAdsFieldService)"
 review_by: 2026-12-01
@@ -20,10 +20,25 @@ sections:
     "campaign_budget": implemented
     "conversion_action": implemented
     "asset": missing
-    "asset_group": missing
-    "change_event": missing
+    "asset_group": implemented
     "label": missing
-    "shopping_performance_view": missing
+    "shopping_performance_view": implemented
+    "landing_page_view": implemented
+    "expanded_landing_page_view": missing
+    "user_location_view": implemented
+    "dynamic_search_ads_search_term_view": implemented
+    "campaign_search_term_view": implemented
+    "campaign_criterion": implemented
+    "ad_group_bid_modifier": implemented
+    "ad_schedule_view": missing
+    "managed_placement_view": missing
+    "group_placement_view": implemented
+    "detail_placement_view": implemented
+    "topic_view": missing
+    "performance_max_placement_view": implemented
+    "ad_group_ad_asset_view": implemented
+    "change_event": missing
+    "auction_insight": permission_gated
   metrics:
     "metrics.impressions": implemented
     "metrics.clicks": implemented
@@ -46,11 +61,14 @@ sections:
   segments:
     "segments.date": implemented
     "segments.device": implemented
+    "segments.hour": implemented
+    "segments.day_of_week": implemented
+    "segments.product_item_id": implemented
     "segments.ad_network_type": missing
-    "segments.day_of_week": missing
     "segments.click_type": missing
-    "segments.conversion_action_name": missing
+    "segments.conversion_action_name": implemented
 tally:
-  implemented: 30
+  implemented: 46
   missing: 11
-coverage_pct: 73
+  permission_gated: 1
+coverage_pct: 81

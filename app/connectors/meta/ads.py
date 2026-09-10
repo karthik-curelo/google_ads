@@ -367,6 +367,10 @@ class MetaAdsConnector(MetaConnector):
         dimensions = {"date": row_date.isoformat() if row_date else None}
         for key in extra:
             dimensions[key] = row.get(key)
+        # Which attribution rule produced these conversion numbers — otherwise
+        # identical-looking figures across time can mean different windows.
+        windows = self.ctx.config.get("action_attribution_windows")
+        dimensions["attribution_windows"] = ",".join(windows) if windows else "default"
 
         fields = stream.spec.get("fields", _INSIGHT_FIELDS)
         metrics: dict[str, Any] = {}
