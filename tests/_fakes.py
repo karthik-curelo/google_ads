@@ -72,6 +72,10 @@ class StubConnector(BaseConnector):
 
     rows_per_day = 2
     fail_with: Exception | None = None
+    # Set to an asyncio.Event to make read_slice block until it's set — lets a
+    # test start a real run_connection(), cancel it mid-flight (simulating a
+    # process shutdown/restart), and assert on the resulting connection state.
+    entered_read_slice: object | None = None
 
     def _build_http_client(self) -> HttpClient:  # pragma: no cover - never used
         return HttpClient(provider="stub")
@@ -85,6 +89,11 @@ class StubConnector(BaseConnector):
     async def read_slice(self, stream: StreamDefinition, slice_: StreamSlice) -> AsyncIterator[Record]:
         if self.fail_with is not None:
             raise self.fail_with
+        if self.entered_read_slice is not None:
+            import asyncio
+
+            self.entered_read_slice.set()  # tell the test "I'm inside the run now"
+            await asyncio.sleep(3600)  # the test cancels the task long before this
         day = slice_.start_date or date.today()
         end = slice_.end_date or day
         while day <= end:

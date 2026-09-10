@@ -19,10 +19,11 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select, update
 
+from app.connectors import errors as E
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
-from app.models import CONN_PAUSED, Connection
+from app.models import CONN_ERROR, CONN_HEALTHY, CONN_PAUSED, RUN_CANCELLED, RUN_RUNNING, Connection, SyncRun
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,7 @@ class SyncScheduler:
     async def start(self) -> None:
         if self._loop_task is not None:
             return
+        await self._reap_orphaned_locks()
         self._stop.clear()
         self._loop_task = asyncio.create_task(self._loop(), name="sync-scheduler")
         logger.info(
@@ -50,6 +52,58 @@ class SyncScheduler:
             self.poll_seconds,
             self.max_concurrent,
         )
+
+    async def _reap_orphaned_locks(self) -> None:
+        """Recover from a hard process kill mid-sync — no graceful shutdown,
+        no chance for run_connection's own CancelledError handling to run, so
+        a connection can be left locked and `status='syncing'` forever, only
+        reclaimable by `_claim_due`'s stale-lock check after `_stale_after`
+        (sync_run_timeout_seconds + 300s — up to ~3h). This is a single-
+        process design (see module docstring), so on a *fresh* start every
+        lock still held is necessarily orphaned — nothing else could
+        legitimately hold one yet. Clear them immediately instead of waiting
+        out the stale window, and treat it the same as a graceful
+        cancellation (app/sync/runner.py's _finalize): not a real failure, so
+        no consecutive_failures bump and no false "error" status — only a
+        connection with a genuine prior failure streak keeps showing error.
+        """
+        now = datetime.now(UTC)
+        async with SessionLocal() as session:
+            stuck = (
+                (await session.execute(select(Connection).where(Connection.locked_at.isnot(None))))
+                .scalars()
+                .all()
+            )
+            if not stuck:
+                return
+            for conn in stuck:
+                run = (
+                    await session.execute(
+                        select(SyncRun)
+                        .where(SyncRun.connection_id == conn.id, SyncRun.status == RUN_RUNNING)
+                        .order_by(SyncRun.id.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if run is not None:
+                    run.status = RUN_CANCELLED
+                    run.finished_at = now
+                    run.phase = "failed"
+                    if run.error_code is None:
+                        run.error_code = E.ErrorCode.CANCELLED
+                        run.error_message = "Orphaned by a process restart — recovered at startup."
+                if conn.status == "syncing":
+                    conn.status = CONN_ERROR if conn.consecutive_failures else CONN_HEALTHY
+                held_by = conn.locked_by
+                conn.locked_at = None
+                conn.locked_by = None
+                conn.next_run_at = now  # pick it back up on the very next tick, not whenever it was due
+                logger.warning(
+                    "Reaped orphaned lock on connection %s (held by %s) — process was killed mid-sync",
+                    conn.id,
+                    held_by,
+                )
+            await session.commit()
 
     async def stop(self) -> None:
         self._stop.set()

@@ -598,6 +598,21 @@ async def _finalize(connection_id: int, run_id: int, outcome: SyncOutcome, start
                 conn.status_detail = None
                 conn.last_error_code = None
                 conn.last_error_message = None
+            elif outcome.status == RUN_CANCELLED:
+                # A cancellation means our own process was shut down/restarted
+                # mid-sync — it says nothing about the connection or
+                # provider's health, so it must NOT count as a failure: no
+                # consecutive_failures bump, no last_error_code/message
+                # overwrite (that would bury whatever the real last error
+                # was, if any), and no flip to "error" for a connection that
+                # was otherwise fine. Without this, a routine deploy restart
+                # left connections stuck showing a false "error" until their
+                # next scheduled run happened to succeed. Only drop out of
+                # the transient "syncing" state; if there's a genuine standing
+                # failure streak from before this interruption, that status
+                # is preserved rather than silently cleared.
+                if conn.status == "syncing":
+                    conn.status = CONN_ERROR if conn.consecutive_failures else CONN_HEALTHY
             else:
                 conn.consecutive_failures = (conn.consecutive_failures or 0) + 1
                 conn.last_error_code = outcome.error_code
