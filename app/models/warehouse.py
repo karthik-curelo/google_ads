@@ -101,7 +101,9 @@ class PerformanceRowMixin:
     @declared_attr
     def __table_args__(cls):
         return (
-            UniqueConstraint("connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"),
+            UniqueConstraint(
+                "connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"
+            ),
             Index(f"ix_{cls.__tablename__}_org_conn_date", "organization_id", "connector_id", "date"),
             Index(f"ix_{cls.__tablename__}_conn_stream_date", "connection_id", "stream", "date"),
             Index(f"ix_{cls.__tablename__}_sync_run", "sync_run_id"),
@@ -173,6 +175,84 @@ class FacebookPagesPerformance(PerformanceRowMixin, Base):
     reach: Mapped[int | None] = mapped_column(Integer)
     clicks: Mapped[int | None] = mapped_column(Integer)
 
+
+class LeadsquaredLead(PerformanceRowMixin, Base):
+    """One row per LeadSquared lead (ProspectID), upserted on `ModifiedOn`.
+
+    Record grain, not daily-aggregate — the one source in this warehouse that
+    isn't a `<source>_performance` fact table in spirit, but reuses the exact
+    same mixin/writer/cursor machinery (§Phase A of the LSQ implementation:
+    docs/coverage/LSQ_VERIFICATION_2026-09-11.md is the design baseline).
+
+    Only the true identity key (`prospect_id`) and the one field every
+    data-quality/classification query needs (`source`) are promoted to typed
+    columns. Everything else — campaign/ad/adset ids, GCLID, UTM, lead type,
+    phone, email, slug — stays in `dimensions`/`raw` JSON on purpose: the
+    verification report found live, real case-duplication in `Source`
+    (`google_lp` vs `Google_lp`) and cross-platform ID contamination in the
+    generic attribution fields, so nothing about their shape is stable enough
+    to bake into a schema. Extracting by name from JSON at query time is the
+    deliberate choice, not a shortcut (§Phase 14 / verification §7).
+    """
+
+    __tablename__ = "leadsquared_leads"
+
+    prospect_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(120))
+
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            UniqueConstraint(
+                "connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"
+            ),
+            UniqueConstraint("connection_id", "prospect_id", name=f"uq_{cls.__tablename__}_conn_prospect"),
+            Index(f"ix_{cls.__tablename__}_org_conn_date", "organization_id", "connector_id", "date"),
+            Index(f"ix_{cls.__tablename__}_conn_stream_date", "connection_id", "stream", "date"),
+            Index(f"ix_{cls.__tablename__}_sync_run", "sync_run_id"),
+            Index(f"ix_{cls.__tablename__}_prospect", "prospect_id"),
+            Index(f"ix_{cls.__tablename__}_source", "connection_id", "source"),
+        )
+
+
+class LeadsquaredActivity(PerformanceRowMixin, Base):
+    """One row per LeadSquared activity (`ProspectActivityId`) — every tracked
+    event type (Booking Created / Post Booking Order Status / Booking
+    Cancelled / Facebook Lead Ads Submissions) lands in this single physical
+    table, distinguished by `stream`, exactly like `PerformanceRowMixin`
+    already dedupes any other source's rows by `(connection_id, stream,
+    record_key)`. Deliberately NOT one table per event type: the verification
+    report confirmed each event type maps its custom fields (including
+    "Booking ID") to a *different* `mx_Custom_N` slot, so a fixed per-event
+    schema would need N tables anyway with no shared query surface — a single
+    JSONB-backed table with the identity/join keys normalised at ingestion
+    time is the model the verification report settled on (§Phase 14 / §B).
+
+    `booking_id` is the one field worth resolving to a real column *at
+    ingestion*, not query time: 206/208/223 each carry it at a different
+    slot, and getting that mapping wrong silently breaks every downstream
+    join, so it is solved once here rather than three times in SQL.
+    """
+
+    __tablename__ = "leadsquared_activities"
+
+    prospect_activity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    related_prospect_id: Mapped[str | None] = mapped_column(String(64))
+    booking_id: Mapped[str | None] = mapped_column(String(64))
+
+    @declared_attr
+    def __table_args__(cls):
+        return (
+            UniqueConstraint(
+                "connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"
+            ),
+            Index(f"ix_{cls.__tablename__}_org_conn_date", "organization_id", "connector_id", "date"),
+            Index(f"ix_{cls.__tablename__}_conn_stream_date", "connection_id", "stream", "date"),
+            Index(f"ix_{cls.__tablename__}_sync_run", "sync_run_id"),
+            Index(f"ix_{cls.__tablename__}_prospect_activity", "prospect_activity_id"),
+            Index(f"ix_{cls.__tablename__}_related_prospect", "related_prospect_id"),
+            Index(f"ix_{cls.__tablename__}_booking_id", "booking_id"),
+        )
 
 
 class AdEntity(Base):

@@ -23,7 +23,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(
             r"(?i)\b(access_token|refresh_token|client_secret|app_secret|id_token|"
             r"authorization_code|developer[_-]?token|api_token|encryption_key|password|"
-            r"code_verifier|client_assertion)\b(\"?\s*[:=]\s*\"?)([^\"'\s,&}\]]+)"
+            r"code_verifier|client_assertion|access[_-]?key|secret[_-]?key)\b(\"?\s*[:=]\s*\"?)([^\"'\s,&}\]]+)"
         ),
         r"\1\2***REDACTED***",
     ),

@@ -273,7 +273,11 @@ async def trigger_sync_detached(connection_id: int, *, sync_mode: str | None = N
         if result.rowcount != 1:
             return
     with contextlib.suppress(Exception):
-        await run_connection(connection_id, trigger="manual", sync_mode=sync_mode)
+        # worker_id must match the "detached" identity claimed just above —
+        # run_connection() now does its own atomic claim on entry, and a
+        # mismatched worker_id there would see this connection as already
+        # (validly) locked by someone else and decline to do any work at all.
+        await run_connection(connection_id, trigger="manual", sync_mode=sync_mode, worker_id="detached")
 
 
 __all__ = ["SyncScheduler", "trigger_sync_detached"]

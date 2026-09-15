@@ -1,6 +1,6 @@
 """End-to-end: scheduler/runner → connector → destination → state (§25, §28, §37)."""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -48,7 +48,7 @@ async def _make_connection(session, org, *, interval: int | None = 3600) -> Conn
         resource_id="r1",
         config={},
         streams=[{"stream": "daily", "sync_mode": "incremental", "enabled": True}],
-        backfill_start_date=date.today() - timedelta(days=4),
+        backfill_start_date=datetime.now(UTC).date() - timedelta(days=4),
         lookback_days=2,
         schedule_interval_seconds=interval,
         enabled=True,
@@ -73,7 +73,12 @@ async def test_full_sync_writes_rows_and_advances_cursor(session, org):
     assert all(r.sessions in (10, 11) for r in rows)
 
     st = (await session.execute(SyncState.__table__.select())).one()
-    assert st.cursor_value == date.today().isoformat()
+    # UTC, not local date — matches what the runner itself uses
+    # (datetime.now(UTC).date()) to resolve "today". Using local date.today()
+    # here made this test fail for part of every day in a UTC+ timezone: local
+    # midnight rolls the calendar over before UTC's does, so the two would
+    # briefly disagree about which day "today" is.
+    assert st.cursor_value == datetime.now(UTC).date().isoformat()
 
     await session.refresh(conn)
     assert conn.status == "healthy"

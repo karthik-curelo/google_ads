@@ -142,6 +142,7 @@ def load_connectors() -> ConnectorRegistry:
     from app.connectors.google import ads as _ads  # noqa: F401
     from app.connectors.google import analytics as _ga4  # noqa: F401
     from app.connectors.google import search_console as _gsc  # noqa: F401
+    from app.connectors.leadsquared import connector as _leadsquared  # noqa: F401
     from app.connectors.meta import ads as _meta_ads  # noqa: F401
     from app.connectors.meta import instagram as _instagram  # noqa: F401
     from app.connectors.meta import pages as _fb_pages  # noqa: F401

@@ -55,6 +55,20 @@ def test_mask_secrets_redacts_tokens():
     assert "EAA" in mask_secrets("EAAB" + "x" * 40) and "REDACTED" in mask_secrets("EAAB" + "x" * 40)
 
 
+def test_mask_secrets_redacts_leadsquared_query_params():
+    """LeadSquared authenticates via accessKey/secretKey query params, not a
+    header — the exact shape these travel in is a URL like
+    `...?accessKey=xxx&secretKey=yyy`, which the original pattern list (built
+    around access_token/client_secret-style snake_case keys) did not match at
+    all. Found during local validation: mask_secrets() left both values
+    completely unredacted."""
+    url = "https://api-in21.leadsquared.com/v2/x?accessKey=u$rSECRETVALUE1&secretKey=SECRETVALUE2"
+    masked = mask_secrets(url)
+    assert "SECRETVALUE1" not in masked
+    assert "SECRETVALUE2" not in masked
+    assert masked.count("REDACTED") == 2
+
+
 def test_error_flag_semantics():
     assert E.authentication_error("x").retryable is False
     assert E.authentication_error("x").recoverable is True

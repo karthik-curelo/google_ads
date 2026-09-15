@@ -247,6 +247,50 @@ async def upsert_identity(
     return identity
 
 
+async def ensure_static_identity(
+    session: AsyncSession, *, organization_id: int, provider: str
+) -> OAuthIdentity:
+    """Get-or-create the placeholder identity an `AuthType.API_KEY` connector's
+    connections attach to.
+
+    Not an OAuth identity at all — there is no external consent step, no
+    per-user token, and nothing encrypted here: the real credential (e.g.
+    LeadSquared's accessKey/secretKey) lives in env-driven `provider_settings`
+    and never touches this row. It exists purely because `Connection.
+    oauth_identity_id` is a NOT NULL foreign key that every connection needs,
+    and reusing that column (rather than making it nullable, which would touch
+    every other connector's assumptions) keeps this a one-table-unaffected
+    addition. `external_account_id="static"` is the same account every time —
+    one org has exactly one LeadSquared account, so there is exactly one row.
+    """
+    existing = (
+        await session.execute(
+            select(OAuthIdentity).where(
+                OAuthIdentity.organization_id == organization_id,
+                OAuthIdentity.provider == provider,
+                OAuthIdentity.external_account_id == "static",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.status != IDENTITY_ACTIVE:
+            existing.status = IDENTITY_ACTIVE
+            existing.status_detail = None
+        return existing
+
+    identity = OAuthIdentity(
+        organization_id=organization_id,
+        provider=provider,
+        external_account_id="static",
+        display_name=f"{provider.title()} (static API key)",
+        scopes=[],
+        status=IDENTITY_ACTIVE,
+    )
+    session.add(identity)
+    await session.flush()
+    return identity
+
+
 async def disconnect_identity(session: AsyncSession, identity: OAuthIdentity) -> bool:
     """Revoke at the provider, then mark locally revoked. Local always succeeds."""
     revoked = False
@@ -407,6 +451,7 @@ __all__: list[str] = [
     "complete_authorization",
     "consume_state",
     "disconnect_identity",
+    "ensure_static_identity",
     "get_oauth_provider",
     "purge_expired_states",
     "token_hash",

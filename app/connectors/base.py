@@ -62,6 +62,14 @@ class HealthStatus(StrEnum):
 class AuthType(StrEnum):
     OAUTH2 = "oauth2"
     OAUTH2_WITH_DEVELOPER_TOKEN = "oauth2_with_developer_token"
+    # A static, account-wide credential pair (e.g. LeadSquared's accessKey /
+    # secretKey query params) — no per-user consent screen, no refresh token,
+    # nothing an `OAuthIdentity` row's encrypted-token fields are meant to
+    # hold. The connector reads the real secret from `provider_settings`
+    # (env-configured, like the Google Ads developer token); the identity row
+    # a connection still needs to satisfy the FK is a placeholder only (see
+    # `StaticTokenProvider` below and `oauth/service.ensure_static_identity`).
+    API_KEY = "api_key"
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +95,28 @@ class TokenProvider(Protocol):
 
     @property
     def account_label(self) -> str | None: ...
+
+
+class StaticTokenProvider:
+    """`TokenProvider` for `AuthType.API_KEY` connectors — there is no token to
+    fetch or refresh, so this exists purely to satisfy the shape the runner
+    always constructs one of. The connector never calls `access_token()`; it
+    builds its own auth params from `ctx.provider_settings` instead.
+    """
+
+    async def access_token(self) -> str:
+        return ""
+
+    async def invalidate(self) -> None:
+        return None
+
+    @property
+    def scopes(self) -> Sequence[str]:
+        return ()
+
+    @property
+    def account_label(self) -> str | None:
+        return None
 
 
 # ---------------------------------------------------------------------------

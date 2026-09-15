@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.api.deps import OrgDep, SessionDep
 from app.connectors import errors as E
+from app.connectors.base import AuthType, ConnectorContext, StaticTokenProvider
 from app.connectors.registry import load_connectors
 from app.core.config import get_settings
 from app.models import OAuthIdentity
@@ -24,6 +25,7 @@ from app.oauth.service import (
     begin_authorization,
     complete_authorization,
     disconnect_identity,
+    ensure_static_identity,
 )
 
 router = APIRouter(tags=["oauth"])
@@ -38,6 +40,16 @@ class ConnectRequest(BaseModel):
 class ConnectResponse(BaseModel):
     authorization_url: str
     state: str
+
+
+class IdentityOut(BaseModel):
+    id: int
+    provider: str
+    email: str | None
+    display_name: str | None
+    status: str
+    status_detail: str | None
+    scopes: list[str]
 
 
 @router.post("/integrations/{connector_id}/connect", response_model=ConnectResponse)
@@ -57,6 +69,58 @@ async def connect(connector_id: str, body: ConnectRequest, org: OrgDep, session:
     except E.ConnectorError as exc:
         raise HTTPException(400, exc.as_user_dict()) from exc
     return ConnectResponse(authorization_url=url, state=state)
+
+
+@router.post("/integrations/{connector_id}/connect-static", response_model=IdentityOut)
+async def connect_static(connector_id: str, org: OrgDep, session: SessionDep):
+    """Connect an `AuthType.API_KEY` connector (currently only LeadSquared).
+
+    There is no external consent screen for a static credential pair, so this
+    collapses `connect` + the OAuth `callback` into one synchronous call: it
+    proves the env-configured accessKey/secretKey actually work with a live
+    `check_connection()`, then creates (or reuses) the placeholder identity
+    those connectors' connections attach to. `/connections/discover` and
+    `POST /connections` need nothing beyond that identity id — they work
+    completely unmodified for this connector, same as for OAuth ones.
+    """
+    registry = load_connectors()
+    if connector_id not in registry:
+        raise HTTPException(404, f"Unknown connector {connector_id!r}")
+    entry = registry.get(connector_id)
+    connector_cls = entry.connector_class
+    if connector_cls.auth_type != AuthType.API_KEY:
+        raise HTTPException(
+            400, f"{connector_id!r} uses OAuth — use POST /integrations/{connector_id}/connect instead."
+        )
+
+    settings = get_settings()
+    from app.sync.runner import _provider_settings  # local import: avoid a module-load cycle
+
+    ctx = ConnectorContext(
+        token_provider=StaticTokenProvider(),
+        provider_settings=_provider_settings(settings, connector_cls.provider),
+    )
+    connector = connector_cls(ctx)
+    try:
+        report = await connector.check_connection()
+    except E.ConnectorError as exc:
+        raise HTTPException(400, exc.as_user_dict()) from exc
+    finally:
+        await connector.aclose()
+    if not report.ok:
+        raise HTTPException(400, {"message": report.message, "status": str(report.status)})
+
+    identity = await ensure_static_identity(session, organization_id=org.id, provider=connector_cls.provider)
+    await session.commit()
+    return IdentityOut(
+        id=identity.id,
+        provider=identity.provider,
+        email=identity.email,
+        display_name=identity.display_name,
+        status=identity.status,
+        status_detail=identity.status_detail,
+        scopes=list(identity.scopes or []),
+    )
 
 
 @router.get("/oauth/{provider}/callback")
@@ -93,16 +157,6 @@ async def oauth_callback(
         f"Connected as {identity.email or identity.display_name or identity.external_account_id}. "
         "You can close this window and return to the app.",
     )
-
-
-class IdentityOut(BaseModel):
-    id: int
-    provider: str
-    email: str | None
-    display_name: str | None
-    status: str
-    status_detail: str | None
-    scopes: list[str]
 
 
 @router.get("/identities", response_model=list[IdentityOut])

@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     meta_redirect_uri: str = "http://localhost:8000/api/v1/oauth/meta/callback"
     meta_api_version: str = "v26.0"
 
+    # --- leadsquared ---------------------------------------------------------
+    # Static access-key/secret-key pair (query params on every call), not
+    # OAuth — see docs/coverage/LSQ_VERIFICATION_2026-09-11.md. Host is
+    # region-shard-specific per account (e.g. api-in21.leadsquared.com).
+    leadsquared_access_key: str = ""
+    leadsquared_secret_key: str = ""
+    leadsquared_host: str = "https://api.leadsquared.com"
+    # Deliberately conservative and below the lower of the two documented
+    # rate tiers (Pro: 5 bulk calls/5s, Super: 10/5s) — the account's actual
+    # plan tier is not known (§11 of the implementation instructions: do not
+    # assume it). Configurable so it can be raised once confirmed.
+    leadsquared_rate_per_second: float = 0.8
+    leadsquared_burst: int = 2
+
     # --- sync engine -------------------------------------------------------
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = 30
@@ -89,6 +103,10 @@ class Settings(BaseSettings):
     @property
     def meta_oauth_configured(self) -> bool:
         return bool(self.meta_app_id and self.meta_app_secret)
+
+    @property
+    def leadsquared_configured(self) -> bool:
+        return bool(self.leadsquared_access_key and self.leadsquared_secret_key and self.leadsquared_host)
 
 
 @lru_cache

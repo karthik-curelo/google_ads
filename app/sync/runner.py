@@ -18,18 +18,24 @@ so the UI can stream it (§17) without a DB write per record.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import or_, update
+
 from app.connectors import errors as E
 from app.connectors.base import (
     AnyRecord,
+    AuthType,
     ConnectorContext,
     EntityRecord,
     HealthStatus,
     Record,
+    StaticTokenProvider,
     StreamDefinition,
     SyncMode,
 )
@@ -146,15 +152,65 @@ async def run_connection(
     *,
     trigger: str = "manual",
     sync_mode: str | None = None,
-    worker_id: str = "local",
-) -> SyncOutcome:
+    worker_id: str | None = None,
+) -> SyncOutcome | None:
+    """Run one connection — the single entry point every caller goes
+    through (a scheduler tick, "Sync now", or a bare direct call), and the
+    single place that guarantees a connection is never actively syncing
+    twice at once.
+
+    Concurrency: claims the connection's lock atomically (one conditional
+    UPDATE, not read-then-write, so it is race-safe across processes) before
+    creating a SyncRun row or touching the connector at all. A caller that
+    already pre-claimed the lock with the *same* `worker_id` (the scheduler's
+    `_claim_due`/`trigger`, or `trigger_sync_detached`) reaffirms its own
+    claim here as a no-op; a bare call with no `worker_id` gets a fresh
+    unique one, so two independent direct calls never collide with each
+    other. If the lock is held by anyone else and isn't stale, this returns
+    `None` immediately — no SyncRun row, no connector work, nothing to clean
+    up. The lock is released in an outer `finally` that wraps the entire rest
+    of this function, so it comes back down even if something raises before
+    the connector is ever constructed — the exact gap where a hard-to-spot
+    production race (multiple scheduler processes vs. a direct call) used to
+    leave a connection locked with no SyncRun row ever created for it.
+    """
     settings = get_settings()
     started = datetime.now(UTC)
+    effective_worker_id = worker_id or f"direct-{uuid.uuid4().hex[:12]}"
+    # Mirrors SyncScheduler._stale_after exactly (scheduler.py) — kept as an
+    # independent literal rather than an import so this claim has no
+    # dependency on the scheduler module; the two are meant to always agree,
+    # not to share code.
+    stale_cutoff = started - timedelta(seconds=settings.sync_run_timeout_seconds + 300)
 
     async with SessionLocal() as session:
         conn = await session.get(Connection, connection_id)
         if conn is None:
             raise E.invalid_configuration(f"Connection {connection_id} does not exist.")
+
+        claim = await session.execute(
+            update(Connection)
+            .where(
+                Connection.id == connection_id,
+                or_(
+                    Connection.locked_at.is_(None),
+                    Connection.locked_at < stale_cutoff,
+                    Connection.locked_by == effective_worker_id,
+                ),
+            )
+            .values(locked_at=started, locked_by=effective_worker_id)
+        )
+        if claim.rowcount != 1:
+            held_by = conn.locked_by  # read before rollback expires the ORM object
+            await session.rollback()
+            logger.info(
+                "Connection %s is already syncing (held by %s) — skipping this %s-triggered call.",
+                connection_id,
+                held_by,
+                trigger,
+            )
+            return None
+
         identity_id = conn.oauth_identity_id
         connector_id = conn.connector_id
         org_id = conn.organization_id
@@ -179,95 +235,128 @@ async def run_connection(
         await session.commit()
         run_id = run.id
 
-    entry = load_connectors().get(connector_id)
-    connector_cls = entry.connector_class
-    provider = connector_cls.provider
-
-    progress = RunProgress(run_id)
-    token_provider = DatabaseTokenProvider(identity_id, settings=settings)
-    ctx = ConnectorContext(
-        token_provider=token_provider,
-        config=config,
-        resource_id=resource_id,
-        resource_metadata=resource_metadata,
-        progress=progress,
-        provider_settings=_provider_settings(settings, provider),
-    )
-
-    writer = DestinationWriter(
-        organization_id=org_id,
-        connection_id=connection_id,
-        connector_id=connector_id,
-        provider=provider,
-        resource_id=resource_id,
-        sync_run_id=run_id,
-    )
-
-    outcome = SyncOutcome(run_id=run_id, status=RUN_RUNNING)
-    connector = connector_cls(ctx)
-
     try:
-        async with asyncio.timeout(settings.sync_run_timeout_seconds):
-            await _run_inner(
-                connector=connector,
-                ctx=ctx,
-                progress=progress,
-                writer=writer,
-                run_id=run_id,
-                connection_id=connection_id,
-                org_id=org_id,
-                configured_streams=configured_streams,
-                sync_mode=sync_mode,
-                backfill_start=backfill_start,
-                lookback_days=lookback_days,
-                default_backfill_days=settings.default_backfill_days,
-                outcome=outcome,
-            )
-    except asyncio.CancelledError:
-        outcome.status = RUN_CANCELLED
-        outcome.error_code = E.ErrorCode.CANCELLED
-        outcome.error_message = "The sync was cancelled."
-        await _finalize(connection_id, run_id, outcome, started)
-        raise
-    except TimeoutError:
-        outcome.status = RUN_FAILED
-        outcome.error_code = E.ErrorCode.TIMEOUT
-        outcome.error_message = (
-            f"The sync exceeded its {settings.sync_run_timeout_seconds}s ceiling and was stopped."
-        )
-        outcome.will_retry = True
-        await _record_error(
-            run_id,
-            connection_id,
-            org_id,
-            E.timeout_error(outcome.error_message, provider=provider, connector_id=connector_id),
-        )
-    except E.ConnectorError as exc:
-        outcome.status = RUN_FAILED
-        outcome.error_code = exc.code
-        outcome.error_message = exc.message
-        outcome.will_retry = exc.retryable
-        await _record_error(run_id, connection_id, org_id, exc)
-    except Exception as exc:  # noqa: BLE001 - nothing escapes the runner untyped
-        wrapped = E.wrap_unexpected(exc, provider=provider, connector_id=connector_id)
-        outcome.status = RUN_FAILED
-        outcome.error_code = wrapped.code
-        outcome.error_message = wrapped.message
-        logger.exception("Unhandled error in sync run %s", run_id)
-        await _record_error(run_id, connection_id, org_id, wrapped)
-    finally:
-        await connector.aclose()
+        entry = load_connectors().get(connector_id)
+        connector_cls = entry.connector_class
+        provider = connector_cls.provider
 
-    if outcome.status == RUN_RUNNING:
-        if outcome.streams_failed and outcome.streams_ok:
-            outcome.status = RUN_PARTIAL
-        elif outcome.streams_failed:
+        progress = RunProgress(run_id)
+        # AuthType.API_KEY connectors (currently just LeadSquared) hold no
+        # per-identity OAuth tokens — the identity row is a placeholder to
+        # satisfy Connection.oauth_identity_id's FK (see
+        # oauth.service.ensure_static_identity), and the real, account-wide
+        # credential comes from provider_settings below, exactly like the Google
+        # Ads developer token or Meta app secret already do. Every other
+        # connector's behaviour here is unchanged.
+        token_provider = (
+            StaticTokenProvider()
+            if connector_cls.auth_type == AuthType.API_KEY
+            else DatabaseTokenProvider(identity_id, settings=settings)
+        )
+        ctx = ConnectorContext(
+            token_provider=token_provider,
+            config=config,
+            resource_id=resource_id,
+            resource_metadata=resource_metadata,
+            progress=progress,
+            provider_settings=_provider_settings(settings, provider),
+        )
+
+        writer = DestinationWriter(
+            organization_id=org_id,
+            connection_id=connection_id,
+            connector_id=connector_id,
+            provider=provider,
+            resource_id=resource_id,
+            sync_run_id=run_id,
+        )
+
+        outcome = SyncOutcome(run_id=run_id, status=RUN_RUNNING)
+        connector = connector_cls(ctx)
+
+        try:
+            async with asyncio.timeout(settings.sync_run_timeout_seconds):
+                await _run_inner(
+                    connector=connector,
+                    ctx=ctx,
+                    progress=progress,
+                    writer=writer,
+                    run_id=run_id,
+                    connection_id=connection_id,
+                    org_id=org_id,
+                    configured_streams=configured_streams,
+                    sync_mode=sync_mode,
+                    backfill_start=backfill_start,
+                    lookback_days=lookback_days,
+                    default_backfill_days=settings.default_backfill_days,
+                    outcome=outcome,
+                )
+        except asyncio.CancelledError:
+            outcome.status = RUN_CANCELLED
+            outcome.error_code = E.ErrorCode.CANCELLED
+            outcome.error_message = "The sync was cancelled."
+            await _finalize(connection_id, run_id, outcome, started)
+            raise
+        except TimeoutError:
             outcome.status = RUN_FAILED
-        else:
-            outcome.status = RUN_SUCCEEDED
+            outcome.error_code = E.ErrorCode.TIMEOUT
+            outcome.error_message = (
+                f"The sync exceeded its {settings.sync_run_timeout_seconds}s ceiling and was stopped."
+            )
+            outcome.will_retry = True
+            await _record_error(
+                run_id,
+                connection_id,
+                org_id,
+                E.timeout_error(outcome.error_message, provider=provider, connector_id=connector_id),
+            )
+        except E.ConnectorError as exc:
+            outcome.status = RUN_FAILED
+            outcome.error_code = exc.code
+            outcome.error_message = exc.message
+            outcome.will_retry = exc.retryable
+            await _record_error(run_id, connection_id, org_id, exc)
+        except Exception as exc:  # noqa: BLE001 - nothing escapes the runner untyped
+            wrapped = E.wrap_unexpected(exc, provider=provider, connector_id=connector_id)
+            outcome.status = RUN_FAILED
+            outcome.error_code = wrapped.code
+            outcome.error_message = wrapped.message
+            logger.exception("Unhandled error in sync run %s", run_id)
+            await _record_error(run_id, connection_id, org_id, wrapped)
+        finally:
+            await connector.aclose()
 
-    await _finalize(connection_id, run_id, outcome, started)
-    return outcome
+        if outcome.status == RUN_RUNNING:
+            if outcome.streams_failed and outcome.streams_ok:
+                outcome.status = RUN_PARTIAL
+            elif outcome.streams_failed:
+                outcome.status = RUN_FAILED
+            else:
+                outcome.status = RUN_SUCCEEDED
+
+        await _finalize(connection_id, run_id, outcome, started)
+        return outcome
+    finally:
+        await _release_lock(connection_id, effective_worker_id)
+
+
+async def _release_lock(connection_id: int, worker_id: str) -> None:
+    """Clear the lock claimed at the top of `run_connection`, but only if
+    it's still ours — guarded by `locked_by`, not an unconditional clear, so
+    a run that overran the stale-lock window and had its lock taken over by
+    a newer claimant can never clobber that claimant's lock on its way out.
+    `_finalize` also clears these columns on its own success path; this is
+    the unconditional backstop for every path that doesn't reach it,
+    including the gap before the connector is even constructed.
+    """
+    with contextlib.suppress(Exception):
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Connection)
+                .where(Connection.id == connection_id, Connection.locked_by == worker_id)
+                .values(locked_at=None, locked_by=None)
+            )
+            await session.commit()
 
 
 async def _run_inner(
@@ -465,6 +554,14 @@ def _provider_settings(settings, provider: str) -> dict[str, Any]:
             "meta_api_version": settings.meta_api_version,
             "meta_app_id": settings.meta_app_id,
             "meta_app_secret": settings.meta_app_secret,
+        }
+    if provider == "leadsquared":
+        return {
+            "leadsquared_access_key": settings.leadsquared_access_key,
+            "leadsquared_secret_key": settings.leadsquared_secret_key,
+            "leadsquared_host": settings.leadsquared_host,
+            "leadsquared_rate_per_second": settings.leadsquared_rate_per_second,
+            "leadsquared_burst": settings.leadsquared_burst,
         }
     return {}
 

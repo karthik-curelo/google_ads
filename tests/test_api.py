@@ -107,11 +107,25 @@ async def test_connection_lifecycle_end_to_end(client, session, org):
     # sync endpoint accepts the request
     assert (await client.post(f"/api/v1/connections/{conn_id}/sync", headers=H)).status_code == 202
 
-    # run it deterministically and check observability (upserts if the detached
-    # trigger already ran on the shared loop — either way, 8 rows, run succeeds)
+    # run it deterministically and check observability. The fire-and-forget
+    # "sync now" background task above and this direct call now race for the
+    # same connection-level lock (run_connection() claims atomically on
+    # entry) — whichever loses gets None back immediately rather than
+    # racing to sync twice, so tolerate either outcome and, if we lost the
+    # race, wait for the winner's own run to actually finish before asserting.
     outcome = await run_connection(conn_id, trigger="manual")
-    assert outcome.status == "succeeded"
-    assert outcome.records_fetched == 8  # 4 days (today-3..today) × 2 rows
+    if outcome is None:
+        import asyncio
+
+        for _ in range(50):
+            detail = (await client.get(f"/api/v1/connections/{conn_id}", headers=H)).json()
+            if detail["status"] != "syncing":
+                break
+            await asyncio.sleep(0.05)
+        assert detail["latest_run"]["status"] == "succeeded"
+    else:
+        assert outcome.status == "succeeded"
+        assert outcome.records_fetched == 8  # 4 days (today-3..today) × 2 rows
 
     detail = (await client.get(f"/api/v1/connections/{conn_id}", headers=H)).json()
     assert detail["status"] == "healthy"

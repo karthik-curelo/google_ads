@@ -32,6 +32,8 @@ from app.models import (
     GoogleAnalyticsPerformance,
     GoogleSearchConsolePerformance,
     InstagramInsightsPerformance,
+    LeadsquaredActivity,
+    LeadsquaredLead,
     MetaAdsPerformance,
     SkippedRecord,
     make_record_key,
@@ -71,6 +73,28 @@ CONNECTOR_MODEL_MAP = {
     "meta_ads": MetaAdsPerformance,
     "instagram_insights": InstagramInsightsPerformance,
     "facebook_pages": FacebookPagesPerformance,
+    # LeadSquared's "default" table for the generic single-table UI/data
+    # endpoints — the leads table, since it is the one every LSQ connection
+    # always has. Its activity streams are NOT single-table (see below) and
+    # need STREAM_MODEL_OVERRIDES to route correctly.
+    "leadsquared": LeadsquaredLead,
+}
+
+# Per-(connector, stream) destination override — the one thing
+# CONNECTOR_MODEL_MAP cannot express, because it assumes one table per
+# connector. LeadSquared is the first source with more than one destination
+# table (a lead-grain table and a single activity-grain table shared by every
+# tracked event type): its `leads` stream still resolves through
+# CONNECTOR_MODEL_MAP above, but every activity stream needs to land in
+# `leadsquared_activities` instead. Checked before CONNECTOR_MODEL_MAP, so it
+# is a pure override — connectors absent here behave exactly as before.
+STREAM_MODEL_OVERRIDES: dict[str, dict[str, Any]] = {
+    "leadsquared": {
+        "booking_created": LeadsquaredActivity,
+        "post_booking_order_status": LeadsquaredActivity,
+        "booking_cancelled": LeadsquaredActivity,
+        "facebook_lead_ads_submissions": LeadsquaredActivity,
+    }
 }
 
 _ENTITY_CONFLICT = ("connection_id", "level", "external_id")
@@ -136,6 +160,12 @@ class DestinationWriter:
         self.sync_run_id = sync_run_id
         self.model = CONNECTOR_MODEL_MAP.get(self.connector_id)
 
+    def _model_for(self, stream_name: str):
+        """Resolve the destination table for one stream — almost always
+        `self.model`, except for a connector with more than one destination
+        table (currently only LeadSquared's activity streams)."""
+        return STREAM_MODEL_OVERRIDES.get(self.connector_id, {}).get(stream_name) or self.model
+
     # --- fact grain ------------------------------------------------------------
     async def write_records(
         self,
@@ -149,31 +179,43 @@ class DestinationWriter:
         if not records:
             return result
 
-        if not self.model:
-            raise ValueError(f"No performance model mapped for connector {self.connector_id}")
+        model = self._model_for(stream.name)
+        if not model:
+            raise ValueError(
+                f"No performance model mapped for connector {self.connector_id} / stream {stream.name}"
+            )
 
         require_date = stream.date_partitioned and stream.grain == "fact"
         validated = validate_records(list(records), stream.primary_key, require_date=require_date)
 
         rows: list[dict[str, Any]] = []
         for record in validated.valid:
-            rows.append(self._report_row(stream, record, schema_version))
+            rows.append(self._report_row(stream, record, schema_version, model))
 
         async with SessionLocal() as session:
             if rows:
-                existing = await self._count_existing(session, stream.name, [r["record_key"] for r in rows])
-                
+                existing = await self._count_existing(
+                    session, stream.name, [r["record_key"] for r in rows], model
+                )
+
                 # Update every column except identity/ownership and `ingested_at`
                 # (that records first-seen; a lookback re-fetch must not bump it).
                 _frozen = {
-                    "id", "organization_id", "connection_id", "connector_id",
-                    "provider", "stream", "resource_id", "record_key", "ingested_at",
+                    "id",
+                    "organization_id",
+                    "connection_id",
+                    "connector_id",
+                    "provider",
+                    "stream",
+                    "resource_id",
+                    "record_key",
+                    "ingested_at",
                 }
-                update_cols = [c.name for c in self.model.__table__.columns if c.name not in _frozen]
-                
+                update_cols = [c.name for c in model.__table__.columns if c.name not in _frozen]
+
                 await bulk_upsert(
                     session,
-                    self.model.__table__,
+                    model.__table__,
                     rows,
                     conflict_columns=("connection_id", "stream", "record_key"),
                     update_columns=tuple(update_cols),
@@ -187,7 +229,10 @@ class DestinationWriter:
 
         return result
 
-    def _report_row(self, stream: StreamDefinition, record: Record, schema_version: int) -> dict[str, Any]:
+    def _report_row(
+        self, stream: StreamDefinition, record: Record, schema_version: int, model: Any = None
+    ) -> dict[str, Any]:
+        model = model or self.model
         row: dict[str, Any] = {
             "organization_id": self.organization_id,
             "connection_id": self.connection_id,
@@ -206,27 +251,40 @@ class DestinationWriter:
             "source_updated_at": None,
         }
         measures = record.measures or {}
-        model_cols = {c.name for c in self.model.__table__.columns} if self.model else set()
+        model_cols = {c.name for c in model.__table__.columns} if model else set()
         for col in MEASURE_COLUMNS:
             if col in model_cols:
                 row[col] = measures.get(col)
+        # A table can declare its own extra identity/join columns beyond the
+        # shared measure set (e.g. leadsquared_leads.prospect_id,
+        # leadsquared_activities.booking_id) — promote any dimension whose
+        # name matches one, so a connector gets a real, indexed column just by
+        # naming its dimensions after it, with no per-connector writer code.
+        # A no-op for every pre-existing table: none of them declare extra
+        # columns beyond what MEASURE_COLUMNS already covers, so this can
+        # never re-route an existing connector's dimension into a column it
+        # did not already have.
+        for key, value in (record.dimensions or {}).items():
+            if key in model_cols and key not in row:
+                row[key] = value
         # Per-source tables differ (Search Console has no `currency`, GA4 no
         # `reach`, …). Drop any key that is not a real column on this table so
         # the INSERT does not reference a column that does not exist.
         return {k: v for k, v in row.items() if k in model_cols} if model_cols else row
 
-    async def _count_existing(self, session, stream: str, keys: list[str]) -> int:
+    async def _count_existing(self, session, stream: str, keys: list[str], model: Any = None) -> int:
         from sqlalchemy import func, select
 
-        if not keys or not self.model:
+        model = model or self.model
+        if not keys or not model:
             return 0
         stmt = (
             select(func.count())
-            .select_from(self.model.__table__)
+            .select_from(model.__table__)
             .where(
-                self.model.connection_id == self.connection_id,
-                self.model.stream == stream,
-                self.model.record_key.in_(keys),
+                model.connection_id == self.connection_id,
+                model.stream == stream,
+                model.record_key.in_(keys),
             )
         )
         return int((await session.execute(stmt)).scalar_one())
@@ -329,4 +387,11 @@ def coerce_measures(raw: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in raw.items() if k in MEASURE_COLUMNS or k == "currency"}
 
 
-__all__ = ["DestinationWriter", "MEASURE_COLUMNS", "WriteResult", "coerce_measures"]
+__all__ = [
+    "CONNECTOR_MODEL_MAP",
+    "STREAM_MODEL_OVERRIDES",
+    "DestinationWriter",
+    "MEASURE_COLUMNS",
+    "WriteResult",
+    "coerce_measures",
+]
