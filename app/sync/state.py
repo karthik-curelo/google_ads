@@ -13,13 +13,13 @@ cursor — and the monotonic rule that stops a lookback re-fetch from rewinding 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.connectors.slicing import advance_cursor, parse_cursor
+from app.connectors.slicing import advance_cursor, advance_ts, format_ts, parse_cursor, parse_ts
 from app.core.database import SessionLocal
 from app.models import SyncState
 
@@ -115,6 +115,71 @@ async def commit_state(
     return state
 
 
+#: Marker stored in `sync_state.state` by timestamp-cursor streams. A stream whose
+#: state lacks it (a legacy date cursor written before timestamp cursors existed)
+#: is treated as un-backfilled and re-swept from the configured start — cheap,
+#: because every write is an idempotent upsert, and the only way to be certain
+#: history the old windowing never covered gets covered.
+TS_STATE_VERSION = 2
+
+
+def is_ts_state(state: StreamState) -> bool:
+    return state.blob.get("v") == TS_STATE_VERSION and parse_ts(state.cursor_value) is not None
+
+
+async def commit_state_ts(
+    state: StreamState,
+    *,
+    reached: datetime,
+    added_records: int = 0,
+    extra: dict[str, Any] | None = None,
+) -> StreamState:
+    """Advance a timestamp checkpoint to `reached` — call only after every record
+    in the window ending at `reached` is durably committed.
+
+    Monotonic against the row *in the database now* (not this run's in-memory
+    copy) and race-retried on the unique constraint, exactly like `commit_state`.
+    """
+    blob = {**(extra or {}), "v": TS_STATE_VERSION}
+    for attempt in (1, 2):
+        async with SessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(SyncState).where(
+                        SyncState.connection_id == state.connection_id,
+                        SyncState.stream == state.stream,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = SyncState(
+                    connection_id=state.connection_id, stream=state.stream, cursor_field=state.cursor_field
+                )
+                session.add(row)
+            row.cursor_field = state.cursor_field or row.cursor_field
+            # A legacy date cursor is ignored (see TS_STATE_VERSION): start the
+            # monotonic comparison from nothing rather than from a stale date.
+            legacy = (row.state or {}).get("v") != TS_STATE_VERSION
+            row.cursor_value = advance_ts(None if legacy else row.cursor_value, reached)
+            row.state = blob
+            row.records_synced = (row.records_synced or 0) + max(0, added_records)
+            try:
+                await session.commit()
+                persisted = row.cursor_value
+                break
+            except IntegrityError:
+                await session.rollback()
+                if attempt == 2:
+                    raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        persisted = format_ts(reached)
+
+    state.cursor_value = persisted
+    state.blob = blob
+    state.records_synced += max(0, added_records)
+    return state
+
+
 async def reset_state(connection_id: int, stream: str | None = None) -> int:
     """Drop cursor(s) so the next run does a full backfill. Returns rows removed."""
     from sqlalchemy import delete
@@ -128,4 +193,12 @@ async def reset_state(connection_id: int, stream: str | None = None) -> int:
         return result.rowcount or 0
 
 
-__all__ = ["StreamState", "commit_state", "load_state", "reset_state"]
+__all__ = [
+    "TS_STATE_VERSION",
+    "StreamState",
+    "commit_state",
+    "commit_state_ts",
+    "is_ts_state",
+    "load_state",
+    "reset_state",
+]

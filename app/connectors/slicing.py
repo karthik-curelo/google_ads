@@ -14,7 +14,7 @@ three things at once:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from app.connectors.base import StreamSlice
 
@@ -105,6 +105,52 @@ def resolve_sync_window(
     if start > end:
         return None
     return SyncWindow(start=start, end=end, is_backfill=is_backfill, reason=reason)
+
+
+# --- second-resolution timestamp cursors -----------------------------------------
+#
+# Record-grain sources (LeadSquared) checkpoint on a UTC timestamp, not a date: a
+# date cursor re-fetches up to a day on every run and cannot express "everything
+# up to 10:35:12 is persisted". Stored as ISO-8601 with a trailing Z.
+
+_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def format_ts(value: datetime) -> str:
+    """Naive-or-aware datetime -> canonical UTC cursor string."""
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value.replace(microsecond=0).strftime(_TS_FORMAT)
+
+
+def parse_ts(value: str | None) -> datetime | None:
+    """Canonical cursor string -> naive-UTC datetime. None if absent/unparseable.
+
+    A bare date (the legacy date-cursor format) is read as that day's midnight,
+    so an old cursor can never look *newer* than it really was.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    try:
+        if len(text) == 10:
+            return datetime.fromisoformat(text)
+        return datetime.strptime(text[:19].replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def advance_ts(current: str | None, candidate: datetime | str | None) -> str | None:
+    """Monotonic timestamp advance — never moves backwards, same rule as dates."""
+    cand = candidate if isinstance(candidate, datetime) else parse_ts(candidate)
+    if cand is None:
+        return current
+    if cand.tzinfo is not None:
+        cand = cand.astimezone(UTC).replace(tzinfo=None)
+    cur = parse_ts(current)
+    if cur is None or cand > cur:
+        return format_ts(cand)
+    return current
 
 
 def advance_cursor(current: str | None, candidate: date | str | None) -> str | None:

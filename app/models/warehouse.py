@@ -200,6 +200,23 @@ class LeadsquaredLead(PerformanceRowMixin, Base):
     prospect_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source: Mapped[str | None] = mapped_column(String(120))
 
+    # Typed copies of the few source attributes the platform itself needs. The
+    # complete attribute set (~206 fields) lives in `raw`; nothing else is
+    # promoted to a column on purpose.
+    #
+    # `source_modified_on` is LeadSquared's `LeadLastModifiedOn` — the timestamp
+    # `Leads.RecentlyModified` actually filters on (live-verified; it moves on
+    # any new activity, not just field edits). It is the incremental cursor and
+    # the ordering guard for upserts.
+    source_modified_on: Mapped[datetime | None] = mapped_column(TimestampType)
+    source_created_on: Mapped[datetime | None] = mapped_column(TimestampType)
+    prospect_stage: Mapped[str | None] = mapped_column(String(120))
+    owner_id: Mapped[str | None] = mapped_column(String(64))
+    # Set by the deletion sweep when the lead is confirmed gone at the source.
+    # The row is kept (history is preserved); readers that want "live" leads
+    # filter `deleted_at IS NULL`. Cleared automatically if the lead reappears.
+    deleted_at: Mapped[datetime | None] = mapped_column(TimestampType)
+
     @declared_attr
     def __table_args__(cls):
         return (
@@ -207,6 +224,7 @@ class LeadsquaredLead(PerformanceRowMixin, Base):
                 "connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"
             ),
             UniqueConstraint("connection_id", "prospect_id", name=f"uq_{cls.__tablename__}_conn_prospect"),
+            Index(f"ix_{cls.__tablename__}_conn_src_modified", "connection_id", "source_modified_on"),
             Index(f"ix_{cls.__tablename__}_org_conn_date", "organization_id", "connector_id", "date"),
             Index(f"ix_{cls.__tablename__}_conn_stream_date", "connection_id", "stream", "date"),
             Index(f"ix_{cls.__tablename__}_sync_run", "sync_run_id"),
@@ -240,11 +258,29 @@ class LeadsquaredActivity(PerformanceRowMixin, Base):
     related_prospect_id: Mapped[str | None] = mapped_column(String(64))
     booking_id: Mapped[str | None] = mapped_column(String(64))
 
+    # The activity type is a first-class discriminator: every LeadSquared activity
+    # type lands in this one raw table, told apart by its integer event code
+    # (and by `stream`). The full source row, every mx_Custom_N slot included,
+    # is preserved verbatim in `raw`.
+    activity_event: Mapped[int | None] = mapped_column(Integer)
+    activity_event_name: Mapped[str | None] = mapped_column(String(120))
+    # `source_modified_on` is the timestamp `RetrieveByActivityEvent` filters on
+    # (live-verified ModifiedOn — NOT CreatedOn). Incremental cursor + upsert guard.
+    source_modified_on: Mapped[datetime | None] = mapped_column(TimestampType)
+    source_created_on: Mapped[datetime | None] = mapped_column(TimestampType)
+    deleted_at: Mapped[datetime | None] = mapped_column(TimestampType)
+
     @declared_attr
     def __table_args__(cls):
         return (
             UniqueConstraint(
                 "connection_id", "stream", "record_key", name=f"uq_{cls.__tablename__}_conn_stream_key"
+            ),
+            Index(
+                f"ix_{cls.__tablename__}_conn_event_modified",
+                "connection_id",
+                "activity_event",
+                "source_modified_on",
             ),
             Index(f"ix_{cls.__tablename__}_org_conn_date", "organization_id", "connector_id", "date"),
             Index(f"ix_{cls.__tablename__}_conn_stream_date", "connection_id", "stream", "date"),

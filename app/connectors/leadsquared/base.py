@@ -17,13 +17,14 @@ below the *lower* of the two, and is raised only by explicit configuration
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
 from app.connectors import errors as E
 from app.connectors.base import AuthType, BaseConnector, HealthReport, HealthStatus
-from app.connectors.http import HttpClient, RateLimiter, RetryPolicy
+from app.connectors.http import HttpClient, RetryPolicy, shared_rate_limiter
 
 _HEALTH_MAP = {
     E.ErrorCode.AUTHENTICATION_ERROR: HealthStatus.NEEDS_REAUTH,
@@ -53,14 +54,19 @@ class LeadSquaredConnector(BaseConnector):
         self._access_key = (ps.get("leadsquared_access_key") or "").strip()
         self._secret_key = (ps.get("leadsquared_secret_key") or "").strip()
         self._host = (ps.get("leadsquared_host") or "").strip().rstrip("/")
-        self._rate_per_second = float(ps.get("leadsquared_rate_per_second") or 0.8)
+        self._rate_per_second = float(ps.get("leadsquared_rate_per_second") or 0.5)
         self._burst = int(ps.get("leadsquared_burst") or 2)
 
     def _build_http_client(self) -> HttpClient:
         return HttpClient(
             timeout=float(self.ctx.provider_settings.get("http_timeout_seconds", 120.0)),
             retry=RetryPolicy(max_attempts=5, base_delay=2.0, max_delay=90.0, max_elapsed=300.0),
-            rate_limiter=RateLimiter(rate_per_second=self._rate_per_second, burst=self._burst),
+            # One bucket per LeadSquared account (host + key), shared by every client
+            # in the process: the API budget belongs to the account, so N
+            # concurrent connections/streams must draw on the same allowance.
+            rate_limiter=shared_rate_limiter(
+                ("leadsquared", self._host, self._access_key), self._rate_per_second, self._burst
+            ),
             max_concurrency=2,
             provider=self.provider,
             connector_id=self.connector_id,
@@ -95,47 +101,62 @@ class LeadSquaredConnector(BaseConnector):
 
     # --- error classification ------------------------------------------
     def _classify(self, response: httpx.Response) -> E.ConnectorError | None:
-        """LeadSquared's error body shape, confirmed live this session:
-        `{"Status": "Error", "ExceptionType": "MXInvalidInputException", ...}`
-        on a 4xx/5xx (e.g. an over-the-1000-cap `PageSize` on the activity
-        endpoint, or a malformed date range). Returning None here falls
-        through to `HttpClient`'s generic status-code classifier.
-        """
-        if response.is_success:
-            return None
-        try:
-            body = response.json()
-        except ValueError:
-            return None
-        if not isinstance(body, dict):
-            return None
-        exc_type = str(body.get("ExceptionType") or "")
-        message = str(body.get("ExceptionMessage") or body.get("Message") or "LeadSquared API error.")
-        status = response.status_code
-        details = {"exception_type": exc_type}
+        return classify_lsq_response(response, provider=self.provider, connector_id=self.connector_id)
 
-        if status in (401, 403) or "accesskey" in message.lower() or "secretkey" in message.lower():
-            return E.authentication_error(
-                f"LeadSquared rejected the access key / secret key: {message}",
-                provider=self.provider,
-                connector_id=self.connector_id,
-                http_status=status,
-                technical_details=details,
-            )
-        if status == 429 or "rate" in exc_type.lower() or "throttl" in message.lower():
-            return E.rate_limit_error(
-                f"LeadSquared is rate limiting requests: {message}",
-                provider=self.provider,
-                connector_id=self.connector_id,
-                http_status=status,
-                technical_details=details,
-            )
-        if "InvalidInput" in exc_type or "MandatoryFieldMissing" in exc_type or status in (400, 422):
-            return E.invalid_configuration(
-                f"LeadSquared rejected the request: {message}",
-                provider=self.provider,
-                connector_id=self.connector_id,
-                http_status=status,
-                technical_details=details,
-            )
+
+# LeadSquared reports EVERY application-level failure as HTTP 500 with a body like
+#   {"Status": "Error", "ExceptionType": "MXInvalidInputException", "ExceptionMessage": "..."}
+# (live-verified: bad PageSize, bad date, missing ActivityEvent, unknown activity
+# id are all 500s; only bad credentials (401) and a bad path (404) use other
+# codes). A 500 therefore does NOT mean "the server is having a bad moment" — an
+# MX*Exception is a deterministic answer to that exact request, and repeating the
+# request repeats the answer. Those are non-retryable. A 500 with no such body
+# (HTML error page, empty) is still treated as transient infrastructure failure.
+_AUTH_HINT = re.compile(r"access ?key|secret ?key|invalid access|access details", re.I)
+_THROTTLE_HINT = re.compile(
+    r"throttl|rate.?limit|too many (calls|requests)|exceeded (the )?(api )?limit", re.I
+)
+_TRANSIENT_HINT = re.compile(
+    r"timeout|timed out|deadlock|temporar|try again|unavailable|connection (reset|closed)", re.I
+)
+_NOT_FOUND_TYPES = re.compile(r"^MXUnknown\w*Exception$")
+
+
+def classify_lsq_response(
+    response: httpx.Response, *, provider: str = "leadsquared", connector_id: str = "leadsquared"
+) -> E.ConnectorError | None:
+    """Map a LeadSquared error response to a typed error, or None to fall through to
+    the generic status-code classifier (which retries 5xx/408/429)."""
+    if response.is_success:
         return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+
+    exc_type = str(body.get("ExceptionType") or "")
+    message = str(body.get("ExceptionMessage") or body.get("Message") or "LeadSquared API error.")
+    status = response.status_code
+    common = {
+        "provider": provider,
+        "connector_id": connector_id,
+        "http_status": status,
+        "technical_details": {"exception_type": exc_type, "message": message[:300]},
+    }
+
+    if status in (401, 403) or _AUTH_HINT.search(message) or "AccessDetails" in exc_type:
+        return E.authentication_error(
+            f"LeadSquared rejected the access key / secret key: {message}", **common
+        )
+    if status == 429 or _THROTTLE_HINT.search(f"{exc_type} {message}"):
+        return E.rate_limit_error(f"LeadSquared is rate limiting requests: {message}", **common)
+    if not exc_type.startswith("MX"):
+        return None  # not an application exception -> generic (transient) handling
+    if _TRANSIENT_HINT.search(message):
+        return E.provider_unavailable(f"LeadSquared reported a transient error: {message}", **common)
+    if _NOT_FOUND_TYPES.match(exc_type):
+        return E.resource_not_found(f"LeadSquared: {message}", **common)
+    # Any other MX*Exception is the API deterministically rejecting this request.
+    return E.invalid_configuration(f"LeadSquared rejected the request ({exc_type}): {message}", **common)

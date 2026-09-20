@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from app.api.deps import OrgDep, SessionDep
-from app.models import SyncError, SyncRun, SyncStreamStat
+from app.models import Connection, SyncError, SyncRun, SyncStreamStat
 
 router = APIRouter(prefix="/sync-runs", tags=["runs"])
 
@@ -25,7 +25,8 @@ async def recent_runs(org: OrgDep, session: SessionDep, limit: int = Query(50, l
         .scalars()
         .all()
     )
-    return {"runs": [_run(r) for r in rows]}
+    connectors = await _connector_ids(session, {r.connection_id for r in rows})
+    return {"runs": [_run(r, connectors.get(r.connection_id)) for r in rows]}
 
 
 @router.get("/{run_id}")
@@ -47,16 +48,29 @@ async def get_run(run_id: int, org: OrgDep, session: SessionDep):
         .scalars()
         .all()
     )
-    data = _run(run)
+    connectors = await _connector_ids(session, {run.connection_id})
+    data = _run(run, connectors.get(run.connection_id))
     data["streams"] = [_stat(s) for s in stats]
     data["errors"] = [_error(e) for e in errors]
     return data
 
 
-def _run(r: SyncRun) -> dict:
+async def _connector_ids(session, connection_ids: set[int]) -> dict[int, str]:
+    if not connection_ids:
+        return {}
+    rows = await session.execute(
+        select(Connection.id, Connection.connector_id).where(Connection.id.in_(connection_ids))
+    )
+    return {row.id: row.connector_id for row in rows}
+
+
+def _run(r: SyncRun, connector_id: str | None = None) -> dict:
     return {
         "id": r.id,
+        "connector_id": connector_id,
         "connection_id": r.connection_id,
+        "execution_id": r.execution_id,
+        "worker_id": r.worker_id,
         "status": r.status,
         "trigger": r.trigger,
         "sync_mode": r.sync_mode,
@@ -70,7 +84,12 @@ def _run(r: SyncRun) -> dict:
         "records_inserted": r.records_inserted,
         "records_updated": r.records_updated,
         "records_skipped": r.records_skipped,
+        "records_failed": r.records_failed,
         "api_calls": r.api_calls,
+        "retry_count": r.retry_count,
+        "rate_limit_events": r.rate_limit_events,
+        "checkpoint_before": r.state_before,
+        "checkpoint_after": r.state_after,
         "slices_completed": r.slices_completed,
         "slices_total": r.slices_total,
         "warnings": r.warnings,
@@ -89,6 +108,16 @@ def _stat(s: SyncStreamStat) -> dict:
         "records_inserted": s.records_inserted,
         "records_updated": s.records_updated,
         "records_skipped": s.records_skipped,
+        "records_failed": s.records_failed,
+        "api_calls": s.api_calls,
+        "retry_count": s.retry_count,
+        "rate_limit_events": s.rate_limit_events,
+        "started_at": s.started_at.isoformat() if s.started_at else None,
+        "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+        "duration_ms": s.duration_ms,
+        "checkpoint_before": s.checkpoint_before,
+        "checkpoint_after": s.checkpoint_after,
+        "reconciliation": s.reconciliation,
         "slices_completed": s.slices_completed,
         "slices_total": s.slices_total,
         "cursor_value": s.cursor_value,

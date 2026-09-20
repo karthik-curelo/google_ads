@@ -57,6 +57,10 @@ CONN_PAUSED = "paused"
 
 RUN_PENDING = "pending"
 RUN_RUNNING = "running"
+# A run that is currently backing off between retries of a provider call. Not
+# terminal, and distinct from RUNNING so an operator can see it is stalled on
+# the provider rather than making progress.
+RUN_RETRYING = "retrying"
 RUN_SUCCEEDED = "succeeded"
 RUN_PARTIAL = "partial_success"
 RUN_FAILED = "failed"
@@ -244,11 +248,23 @@ class Connection(Base):
     total_records_synced: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # Health of the *scheduled* path specifically. A manual run succeeds in the
+    # operator's environment; a scheduled run executes in the scheduler
+    # process's environment, which can be missing configuration the manual one
+    # had. Tracking them separately stops a manual success from hiding a broken
+    # schedule.
+    last_scheduled_run_at: Mapped[datetime | None] = mapped_column(TimestampType)
+    last_scheduled_success_at: Mapped[datetime | None] = mapped_column(TimestampType)
+    consecutive_scheduled_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     # Cooperative lock. A scheduler claims a connection by CAS-ing these in a
     # single UPDATE, which is what prevents concurrent runs of one connection
     # without needing a broker.
     locked_at: Mapped[datetime | None] = mapped_column(TimestampType)
     locked_by: Mapped[str | None] = mapped_column(String(120))
+    # When the holder's lease lapses if it stops heartbeating. Written by the holder, so
+    # the promise is the holder's own - see app/sync/leases.py.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(TimestampType)
 
     created_at: Mapped[datetime] = mapped_column(TimestampType, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -291,6 +307,14 @@ class SyncRun(Base):
     slices_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     slices_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     warnings: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rate_limit_events: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Who ran it. `execution_id` is unique per run_connection() call and appears
+    # in every log line for that run; `worker_id` identifies the process.
+    execution_id: Mapped[str | None] = mapped_column(String(40), index=True)
+    worker_id: Mapped[str | None] = mapped_column(String(120))
 
     error_code: Mapped[str | None] = mapped_column(String(60))
     error_message: Mapped[str | None] = mapped_column(Text)
@@ -328,6 +352,20 @@ class SyncStreamStat(Base):
     cursor_value: Mapped[str | None] = mapped_column(String(120))
     error_code: Mapped[str | None] = mapped_column(String(60))
     error_message: Mapped[str | None] = mapped_column(Text)
+
+    started_at: Mapped[datetime | None] = mapped_column(TimestampType)
+    finished_at: Mapped[datetime | None] = mapped_column(TimestampType)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    records_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rate_limit_events: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # The stream's checkpoint on entry and on exit. Equal on a failed stream:
+    # the checkpoint never moves past a window that did not reconcile.
+    checkpoint_before: Mapped[str | None] = mapped_column(String(120))
+    checkpoint_after: Mapped[str | None] = mapped_column(String(120))
+    # Source-vs-warehouse evidence for the stream: windows, source_count,
+    # fetched, distinct, persisted, skipped, mismatches.
+    reconciliation: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
 
     run: Mapped[SyncRun] = relationship(back_populates="stream_stats")
 

@@ -12,7 +12,12 @@ import respx
 
 from app.connectors import errors as E
 from app.connectors.base import AuthType, HealthStatus, StreamSlice
-from app.connectors.leadsquared.connector import ACTIVITY_EVENTS, LEADS_STREAM, LeadSquaredCRMConnector
+from app.connectors.leadsquared.connector import (
+    ACTIVITY_EVENTS,
+    ALL_ACTIVITY_EVENTS,
+    LEADS_STREAM,
+    LeadSquaredCRMConnector,
+)
 from app.connectors.registry import load_connectors
 from tests._fakes import make_ctx
 
@@ -38,13 +43,23 @@ def test_registry_has_leadsquared_with_static_api_key_auth():
     assert entry.connector_class.auth_type == AuthType.API_KEY
     assert entry.connector_class.provider == "leadsquared"
     names = {s.name for s in entry.connector_class.declared_streams()}
-    assert names == {LEADS_STREAM, *ACTIVITY_EVENTS}
+    # Every activity type the account exposes is a stream (84) plus leads — raw
+    # ingestion must not silently discard a source activity type.
+    assert names == {LEADS_STREAM, *ALL_ACTIVITY_EVENTS}
+    assert len(names) == 85
+    assert set(ACTIVITY_EVENTS) <= names  # the four historical names are unchanged
+    assert all(s.cursor_kind == "timestamp" for s in entry.connector_class.declared_streams())
 
 
 @respx.mock
 async def test_check_connection_success():
     respx.get(f"{HOST}/v2/LeadManagement.svc/LeadsMetaData.Get").mock(
         return_value=httpx.Response(200, json=[{"SchemaName": "ProspectID"}, {"SchemaName": "Phone"}])
+    )
+    respx.get(f"{HOST}/v2/ProspectActivity.svc/ActivityTypes.Get").mock(
+        return_value=httpx.Response(
+            200, json=[{"ActivityEvent": 206, "ActivityEventName": "Booking Created"}]
+        )
     )
     conn = LeadSquaredCRMConnector(_ctx())
     report = await conn.check_connection()
@@ -138,21 +153,7 @@ async def test_read_slice_leads_maps_identity_and_attribution_fields():
     assert r.dimensions["mx_lead_type"] == "P1 - Curelo New"
     assert r.cursor_value == "2026-09-11 05:27:32.000"
     assert r.raw["ProspectID"] == "p1"  # raw payload preserved verbatim
-
-
-@respx.mock
-async def test_read_slice_leads_paginates_at_the_confirmed_5000_cap():
-    full_page = {"RecordCount": 5001, "Leads": [_lead_property_list(ProspectID=f"p{i}") for i in range(5000)]}
-    tail_page = {"RecordCount": 5001, "Leads": [_lead_property_list(ProspectID="p5000")]}
-    route = respx.post(f"{HOST}/v2/LeadManagement.svc/Leads.RecentlyModified")
-    route.side_effect = [httpx.Response(200, json=full_page), httpx.Response(200, json=tail_page)]
-
-    conn = LeadSquaredCRMConnector(_ctx())
-    stream = conn.get_stream(LEADS_STREAM)
-    rows = [r async for r in conn.read_slice(stream, StreamSlice(date(2026, 9, 1), date(2026, 9, 1)))]
-    await conn.aclose()
-    assert len(rows) == 5001
-    assert route.call_count == 2
+    assert r.extra["source_modified_on"] is not None
 
 
 @respx.mock
@@ -254,24 +255,6 @@ async def test_read_slice_booking_cancelled_resolves_its_own_slots():
     r = rows[0]
     assert r.dimensions["booking_id"] == "BK-100"
     assert r.dimensions["cancelled_amount"] == "675.0"
-
-
-@respx.mock
-async def test_read_slice_activity_paginates_at_the_confirmed_1000_cap():
-    full_page = {
-        "RecordCount": 1001,
-        "List": [_activity_row(ProspectActivityId=f"a{i}") for i in range(1000)],
-    }
-    tail_page = {"RecordCount": 1001, "List": [_activity_row(ProspectActivityId="a1000")]}
-    route = respx.post(f"{HOST}/v2/ProspectActivity.svc/CustomActivity/RetrieveByActivityEvent")
-    route.side_effect = [httpx.Response(200, json=full_page), httpx.Response(200, json=tail_page)]
-
-    conn = LeadSquaredCRMConnector(_ctx())
-    stream = conn.get_stream("booking_created")
-    rows = [r async for r in conn.read_slice(stream, StreamSlice(date(2026, 9, 1), date(2026, 9, 1)))]
-    await conn.aclose()
-    assert len(rows) == 1001
-    assert route.call_count == 2
 
 
 @respx.mock

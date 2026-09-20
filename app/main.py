@@ -31,6 +31,7 @@ from app.core.config import get_settings
 from app.core.database import engine
 from app.core.logging import get_logger, setup_logging
 from app.models import ApiToken, Base, Organization
+from app.sync.preflight import misconfigured_connections, run_preflight
 from app.sync.scheduler import SyncScheduler
 
 logger = get_logger(__name__)
@@ -96,10 +97,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _create_schema()
     await _bootstrap_tenant()
 
-
-
     scheduler: SyncScheduler | None = None
     if settings.scheduler_enabled and not settings.testing:
+        # This process will EXECUTE scheduled runs, so it must have every setting
+        # those connections need — check now, loudly, instead of failing quietly
+        # every interval (the LeadSquared incident).
+        await run_preflight()
         scheduler = SyncScheduler()
         await scheduler.start()
     app.state.scheduler = scheduler
@@ -147,7 +150,18 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict:
-        return {"status": "ok", "connectors": len(load_connectors())}
+        body: dict = {"status": "ok", "connectors": len(load_connectors())}
+        if getattr(app.state, "scheduler", None) is not None:
+            problems = await misconfigured_connections()
+            if problems:
+                # 200 with a degraded body: the process is up, but scheduled runs of
+                # these connections cannot succeed here.
+                body["status"] = "degraded"
+                body["misconfigured"] = [
+                    {"connection_id": p.connection_id, "connector": p.connector_id, "reason": p.reason}
+                    for p in problems
+                ]
+        return body
 
     if _WEB_DIR.is_dir():
         app.mount("/app", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")

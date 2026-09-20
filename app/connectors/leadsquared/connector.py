@@ -1,35 +1,42 @@
-"""LeadSquared connector — leads + booking/order-status/cancellation activity.
+"""LeadSquared connector — complete lead payload + every activity type.
 
-Design baseline: docs/coverage/LSQ_VERIFICATION_2026-09-11.md (Phase 14 /
-§A-§F). The short version of what shaped the choices below, all live-verified
-that session, not assumed:
+Design baseline: docs/coverage/LSQ_VERIFICATION_2026-09-11.md, corrected by the live
+extraction audit of 2026-09-19 (memory: lsq-extraction-audit-2026-09-19). What the
+API was verified to do, and what the connector does about it:
 
-  cursor          `Leads.RecentlyModified`'s FromDate/ToDate filters
-                  `ModifiedOn`, not `CreatedOn` — confirmed by construing a
-                  window around one lead's own CreatedOn (0 results) vs its
-                  ModifiedOn (a match). `RetrieveByActivityEvent` filters
-                  `CreatedOn` (activities are effectively immutable once
-                  created, so that is also the semantically right cursor).
-  page limits     Leads.RecentlyModified: 5000/page. RetrieveByActivityEvent:
-                  1000/page (a 2000 request returned a live
-                  MXInvalidInputException naming the 1000 cap).
-  timestamps      UTC, confirmed by comparing the most-recently-modified
-                  leads against true-UTC-now vs a falsely-IST-shifted "now".
-  booking id      sits at a *different* mx_Custom_N slot per event type
-                  (206→mx_Custom_2, 208→mx_Custom_4, 223→mx_Custom_3),
-                  confirmed via `GetActivitySetting`, not sampled — resolved
-                  once here at ingestion, not left for every downstream query
-                  to get wrong.
-  Opportunities   deliberately NOT a stream — a live "Won" opportunity's
-                  amount/booking-id/customer-id were byte-for-byte identical
-                  to the same booking's 206 record; it is a mirror, not an
-                  independent revenue source (§A).
+  filter columns   `Leads.RecentlyModified` filters on `LeadLastModifiedOn` (moves on
+                   any new activity — NOT the `ModifiedOn` attribute);
+                   `RetrieveByActivityEvent` filters on `ModifiedOn` (NOT CreatedOn).
+                   Both are therefore *modification* cursors, which is what an
+                   incremental sync wants — and why activity edits are picked up.
+  paging           No page token exists and CreatedOn ordering is non-deterministic
+                   (rows were silently lost). See window.py: windows are sized to
+                   fit one page, verified against `RecordCount`, and ordered by the
+                   record's unique id in the one case that must page.
+  page limits      Leads.RecentlyModified 5000/page (default here 2000 — a full-payload
+                   lead is ~3 KB, so 5000 would be ~15 MB per response);
+                   RetrieveByActivityEvent 1000/page.
+  timestamps       UTC. Stored with SUB-SECOND precision (printed `.000`); From/ToDate are
+                   parsed as whole seconds, so `ToDate=04` means "up to 04.000". Adjacent
+                   windows [00..04] + [05..09] therefore miss the crack (04.000, 05.000) —
+                   live: 10 leads in [00..09], 9 in the halves. Windows are closed intervals
+                   that SHARE their boundary second (see window.py).
+  lead payload     206 attributes per lead. `Columns` is NOT sent, so every attribute
+                   the API returns is preserved in `raw`; the ~24 attribution fields
+                   the analytics views use are also normalised into `dimensions`.
+  activity types   84 types; the API needs an explicit `ActivityEvent` (no "all
+                   types" call), so each type is its own stream. All land in one raw
+                   table, discriminated by `activity_event`; the full row (every
+                   mx_Custom_N slot) is kept verbatim in `raw`.
+  booking id       sits at a different mx_Custom_N slot per event type
+                   (206->2, 208->4, 223->3), confirmed via GetActivitySetting.
+  Opportunities    deliberately NOT a stream — a mirror of the 206 booking record.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from app.connectors import errors as E
@@ -40,24 +47,43 @@ from app.connectors.base import (
     ResourceDescriptor,
     StreamDefinition,
     StreamSlice,
+    WindowBatch,
+)
+from app.connectors.leadsquared.activity_catalog import (
+    ACTIVITY_TYPES,
+    event_for_stream_name,
+    stream_name_for_event,
 )
 from app.connectors.leadsquared.base import LeadSquaredConnector, health_from_error
+from app.connectors.leadsquared.window import WINDOW_FMT, Page, WindowFetcher
 from app.connectors.registry import RegistryEntry, registry
 from app.connectors.validation import build_json_schema, clean_dimension
 
 LEADS_STREAM = "leads"
 
-# stream name -> LeadSquared ActivityEvent code (docs/coverage/LSQ_DISCOVERY_2026-09-11.md
-# Phase 5, docs/coverage/LSQ_VERIFICATION_2026-09-11.md §B/§C). 225 (Payment
-# Success) is deliberately excluded — the verification pass found it covers
-# under 1% of bookings in this account and is not the funnel's real payment
-# signal (§6/§C of the verification report).
+LEADS_PATH = "/v2/LeadManagement.svc/Leads.RecentlyModified"
+ACTIVITY_PATH = "/v2/ProspectActivity.svc/CustomActivity/RetrieveByActivityEvent"
+ACTIVITY_TYPES_PATH = "/v2/ProspectActivity.svc/ActivityTypes.Get"
+
+# Documented API caps (live-verified: exceeding either is an MXInvalidInputException).
+LEAD_PAGE_CAP = 5000
+ACTIVITY_PAGE_CAP = 1000
+DEFAULT_LEAD_PAGE_SIZE = 2000
+
+# The four activity types the analytics layer builds on, under their historical
+# stream names (kept: record_key hashes the stream name).
 ACTIVITY_EVENTS: dict[str, int] = {
     "booking_created": 206,
     "post_booking_order_status": 208,
     "booking_cancelled": 223,
     "facebook_lead_ads_submissions": 204,
 }
+
+# EVERY activity type the account exposes, stream name -> event code. Raw ingestion
+# never silently discards a source activity type; which types feed governed
+# analytics is a separate, downstream choice. (Payment Success 225 was excluded from
+# analytics because it covers <1% of bookings — it is now still *extracted* here.)
+ALL_ACTIVITY_EVENTS: dict[str, int] = {stream_name_for_event(c): c for c in ACTIVITY_TYPES}
 
 # The fields worth resolving to a named key at ingestion time rather than
 # query time — confirmed live via `GetActivitySetting` (implementation
@@ -92,33 +118,6 @@ _ACTIVITY_FIELD_MAP: dict[str, dict[str, str]] = {
     },
     "facebook_lead_ads_submissions": {},
 }
-
-LEAD_COLUMNS = [
-    "ProspectID",
-    "Phone",
-    "EmailAddress",
-    "Source",
-    "SourceCampaign",
-    "mx_Source_Campaign_ID",
-    "mx_GCLid",
-    "mx_Ad_Id",
-    "mx_Ad_Name",
-    "mx_Adset_Id",
-    "mx_Adset_Name",
-    "mx_utm_source",
-    "mx_utm_medium",
-    "mx_utm_term",
-    "mx_utm_keyword",
-    "mx_utm_keyword_id",
-    "mx_Latest_Source",
-    "mx_Lead_Type",
-    "mx_Product_Service_Interest",
-    "mx_Slug",
-    "mx_google_location_id",
-    "mx_Source_Referral_URL",
-    "CreatedOn",
-    "ModifiedOn",
-]
 
 _LEAD_DIMENSIONS = [
     "prospect_id",
@@ -184,20 +183,8 @@ def _parse_lsq_dt(value: Any) -> datetime | None:
     return None
 
 
-def _streams() -> list[StreamDefinition]:
-    out = [
-        StreamDefinition(
-            name=LEADS_STREAM,
-            description="LeadSquared leads (prospects) — incremental on ModifiedOn.",
-            json_schema=build_json_schema(_LEAD_DIMENSIONS, []),
-            primary_key=["prospect_id"],
-            grain="fact",
-            slice_days=14,
-            default_cursor_field="ModifiedOn",
-            spec={},
-        )
-    ]
-    descriptions = {
+def _activity_description(name: str, code: int) -> str:
+    legacy = {
         "booking_created": (
             "Booking Created (event 206) — the primary commitment signal. NOT yet the "
             "authoritative conversion definition; see LSQ_VERIFICATION_2026-09-11.md §6/§9."
@@ -214,32 +201,154 @@ def _streams() -> list[StreamDefinition]:
             "source captured at submission time, independent of the lead's own mx_* fields."
         ),
     }
-    for name, event_code in ACTIVITY_EVENTS.items():
-        out.append(
-            StreamDefinition(
-                name=name,
-                description=descriptions[name],
-                json_schema=build_json_schema(_ACTIVITY_DIMENSIONS, []),
-                primary_key=["prospect_activity_id"],
-                grain="fact",
-                # 208 is by far the highest-volume stream (~5k/day in the
-                # account this was verified against) — a shorter window keeps
-                # each page count (1000/page, confirmed live cap) reasonable.
-                slice_days=3 if name == "post_booking_order_status" else 7,
-                default_cursor_field="CreatedOn",
-                spec={"activity_event": event_code},
-            )
+    if name in legacy:
+        return legacy[name]
+    return (
+        f"{ACTIVITY_TYPES.get(code, 'Unknown activity type')} (activity event {code}) — raw activity "
+        "rows; the complete source payload is preserved and the type is kept in `activity_event`."
+    )
+
+
+def _activity_stream(name: str, code: int) -> StreamDefinition:
+    return StreamDefinition(
+        name=name,
+        description=_activity_description(name, code),
+        json_schema=build_json_schema(_ACTIVITY_DIMENSIONS, []),
+        primary_key=["prospect_activity_id"],
+        grain="fact",
+        # `RetrieveByActivityEvent` filters on ModifiedOn (live-verified).
+        default_cursor_field="ModifiedOn",
+        cursor_kind="timestamp",
+        spec={"activity_event": code},
+    )
+
+
+def _streams() -> list[StreamDefinition]:
+    out = [
+        StreamDefinition(
+            name=LEADS_STREAM,
+            description=(
+                "LeadSquared leads (prospects) — complete source payload. Incremental on "
+                "LeadLastModifiedOn, the column Leads.RecentlyModified actually filters on."
+            ),
+            json_schema=build_json_schema(_LEAD_DIMENSIONS, []),
+            primary_key=["prospect_id"],
+            grain="fact",
+            default_cursor_field="LeadLastModifiedOn",
+            cursor_kind="timestamp",
+            spec={},
         )
+    ]
+    out += [_activity_stream(name, code) for name, code in ALL_ACTIVITY_EVENTS.items()]
     return out
+
+
+# Attributes LeadSquared appends to every lead in a RESPONSE that describe the query, not
+# the lead. `Total` is the total of the window being read (live-verified: the same lead
+# came back with 153, then 108), so storing it made every re-read look like a change and
+# rewrote every unchanged lead on each overlap.
+_ENVELOPE_ATTRIBUTES = frozenset({"Total"})
+
+
+def lead_attributes(entry: dict[str, Any]) -> dict[str, Any]:
+    """`LeadPropertyList` ([{Attribute, Value}, ...]) -> {Attribute: Value}."""
+    return {
+        p.get("Attribute"): p.get("Value") for p in entry.get("LeadPropertyList", []) if p.get("Attribute")
+    }
+
+
+def _start_of_day(d: date) -> datetime:
+    return datetime.combine(d, time.min)
+
+
+def _end_of_day(d: date) -> datetime:
+    # The next midnight (closed interval): 23:59:59 would leave the last second's sub-second
+    # rows (23:59:59.001-.999) in the crack between this day and the next.
+    return datetime.combine(d + timedelta(days=1), time.min)
+
+
+class _LeadSource:
+    """PageSource for Leads.RecentlyModified. `Columns` is deliberately NOT sent so the
+    API returns every attribute (206 in this account); ordered by the unique id."""
+
+    def __init__(self, connector: LeadSquaredCRMConnector, page_size: int) -> None:
+        self.connector = connector
+        self.page_size = page_size
+
+    async def fetch(self, start: datetime, end: datetime, page_index: int, page_size: int) -> Page:
+        body = {
+            "Parameter": {"FromDate": start.strftime(WINDOW_FMT), "ToDate": end.strftime(WINDOW_FMT)},
+            "Paging": {"PageIndex": page_index, "PageSize": page_size},
+            "Sorting": {"ColumnName": "ProspectID", "Direction": "1"},
+        }
+        self.connector.ctx.progress.note(
+            f"{LEADS_STREAM}: {start:%Y-%m-%d %H:%M:%S}..{end:%Y-%m-%d %H:%M:%S} p{page_index}"
+        )
+        payload = await self.connector._post(LEADS_PATH, body)
+        count, rows = self.connector._read_page(payload, "Leads")
+        return Page(record_count=count, rows=[lead_attributes(e) for e in rows])
+
+    def row_id(self, row: dict[str, Any]) -> str | None:
+        return row.get("ProspectID") or None
+
+
+class _ActivitySource:
+    """PageSource for RetrieveByActivityEvent — one activity type per instance."""
+
+    def __init__(self, connector: LeadSquaredCRMConnector, stream_name: str, code: int) -> None:
+        self.connector = connector
+        self.stream_name = stream_name
+        self.code = code
+        self.page_size = ACTIVITY_PAGE_CAP
+
+    async def fetch(self, start: datetime, end: datetime, page_index: int, page_size: int) -> Page:
+        body = {
+            "Parameter": {
+                "FromDate": start.strftime(WINDOW_FMT),
+                "ToDate": end.strftime(WINDOW_FMT),
+                "ActivityEvent": self.code,
+            },
+            "Paging": {"PageIndex": page_index, "PageSize": page_size},
+            "Sorting": {"ColumnName": "ProspectActivityId", "Direction": "1"},
+        }
+        self.connector.ctx.progress.note(
+            f"{self.stream_name}: {start:%Y-%m-%d %H:%M:%S}..{end:%Y-%m-%d %H:%M:%S} p{page_index}"
+        )
+        payload = await self.connector._post(ACTIVITY_PATH, body)
+        count, rows = self.connector._read_page(payload, "List")
+        return Page(record_count=count, rows=rows)
+
+    def row_id(self, row: dict[str, Any]) -> str | None:
+        return row.get("ProspectActivityId") or None
 
 
 class LeadSquaredCRMConnector(LeadSquaredConnector):
     connector_id = "leadsquared"
     name = "LeadSquared"
-    version = "1.0.0"
+    version = "2.0.0"
     documentation_url = "https://apidocs.leadsquared.com/"
     icon = "leadsquared"
     STREAMS = _streams()
+
+    def __init__(self, ctx: Any) -> None:
+        super().__init__(ctx)
+        cfg = ctx.config or {}
+        self._lead_page_size = max(
+            1, min(int(cfg.get("lead_page_size") or DEFAULT_LEAD_PAGE_SIZE), LEAD_PAGE_CAP)
+        )
+        # Activity types seen live but absent from the catalog (populated by check_connection).
+        self.undeclared_activity_types: dict[int, str] = {}
+
+    # --- catalog ---------------------------------------------------------------
+    def get_streams(self) -> list[StreamDefinition]:
+        """Declared streams plus one for every live activity type the catalog does
+        not know yet — a type added in LeadSquared after the catalog snapshot is
+        extracted from its very first run instead of being silently ignored."""
+        extra = [
+            _activity_stream(stream_name_for_event(code), code)
+            for code in sorted(self.undeclared_activity_types)
+        ]
+        return [*self.declared_streams(), *extra]
 
     # --- CHECK -------------------------------------------------------------
     async def check_connection(self) -> HealthReport:
@@ -252,10 +361,26 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
                 status=HealthStatus.INVALID_CONFIGURATION,
                 message="LeadSquared returned no lead fields — check the access key, secret key and host.",
             )
-        return HealthReport(
-            status=HealthStatus.HEALTHY,
-            message=f"Connected to LeadSquared ({len(payload)} lead fields discovered).",
-        )
+        details: dict[str, Any] = {"lead_fields": len(payload)}
+        # Best effort: a failure here must not fail the health check, but a new
+        # activity type must not go unnoticed.
+        try:
+            live = await self._get(ACTIVITY_TYPES_PATH)
+            live_types = {
+                int(t["ActivityEvent"]): str(t.get("ActivityEventName") or "")
+                for t in live
+                if isinstance(t, dict) and t.get("ActivityEvent") is not None
+            }
+            self.undeclared_activity_types = {c: n for c, n in live_types.items() if c not in ACTIVITY_TYPES}
+            details["activity_types_live"] = len(live_types)
+            details["undeclared_activity_types"] = self.undeclared_activity_types
+            details["catalog_types_missing_from_live"] = sorted(set(ACTIVITY_TYPES) - set(live_types))
+        except (E.ConnectorError, TypeError, ValueError, KeyError) as exc:
+            details["activity_types_check_error"] = str(exc)[:200]
+        message = f"Connected to LeadSquared ({len(payload)} lead fields discovered)."
+        if self.undeclared_activity_types:
+            message += f" {len(self.undeclared_activity_types)} new activity type(s) will be extracted."
+        return HealthReport(status=HealthStatus.HEALTHY, message=message, details=details)
 
     # --- DISCOVER ------------------------------------------------------
     async def discover_resources(self) -> list[ResourceDescriptor]:
@@ -272,62 +397,136 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
             )
         ]
 
+    # --- response validation -----------------------------------------------
+    def _read_page(self, payload: Any, key: str) -> tuple[int, list[dict[str, Any]]]:
+        """Validate one retrieval response. A payload missing the data it must carry is
+        an error — never an "empty page", which would silently end a window and let
+        the checkpoint advance over rows that were never read."""
+        if not isinstance(payload, dict):
+            raise self._malformed(f"expected a JSON object, got {type(payload).__name__}", payload)
+        if payload.get("Status") == "Error" or payload.get("ExceptionType"):
+            # An application error delivered with a 2xx status.
+            raise E.invalid_configuration(
+                f"LeadSquared returned an error body: {payload.get('ExceptionMessage') or payload.get('Message')}",
+                provider=self.provider,
+                connector_id=self.connector_id,
+                technical_details={"exception_type": str(payload.get("ExceptionType"))},
+            )
+        count = payload.get("RecordCount")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise self._malformed("missing or non-integer RecordCount", payload)
+        rows = payload.get(key)
+        if rows is None and count == 0:
+            return 0, []  # LeadSquared omits the list entirely for an empty window
+        if not isinstance(rows, list):
+            raise self._malformed(f"RecordCount={count} but no {key!r} list", payload)
+        return count, rows
+
+    def _malformed(self, why: str, payload: Any) -> E.ConnectorError:
+        return E.api_schema_error(
+            f"LeadSquared returned a malformed response: {why}.",
+            provider=self.provider,
+            connector_id=self.connector_id,
+            technical_details={"keys": sorted(payload)[:10] if isinstance(payload, dict) else None},
+        )
+
     # --- READ ----------------------------------------------------------
-    async def read_slice(self, stream: StreamDefinition, slice_: StreamSlice) -> AsyncIterator[Record]:
+    def _source_for(self, stream: StreamDefinition) -> _LeadSource | _ActivitySource:
         if stream.name == LEADS_STREAM:
-            async for rec in self._read_leads(slice_):
-                yield rec
-            return
-        event_code = ACTIVITY_EVENTS.get(stream.name)
-        if event_code is None:
+            return _LeadSource(self, self._lead_page_size)
+        code = event_for_stream_name(stream.name)
+        if code is None:
             raise E.invalid_configuration(
                 f"Unknown LeadSquared stream {stream.name!r}.",
                 provider=self.provider,
                 connector_id=self.connector_id,
             )
-        async for rec in self._read_activities(stream, event_code, slice_):
-            yield rec
+        return _ActivitySource(self, stream.name, code)
 
-    async def _read_leads(self, slice_: StreamSlice) -> AsyncIterator[Record]:
-        start = slice_.start_date or date.today()
-        end = slice_.end_date or start
-        from_date = f"{start.isoformat()} 00:00:00"
-        to_date = f"{end.isoformat()} 23:59:59"
+    async def read_range(
+        self,
+        stream: StreamDefinition,
+        start: datetime,
+        end: datetime,
+        *,
+        initial_span: timedelta | None = None,
+    ) -> AsyncIterator[WindowBatch]:
+        source = self._source_for(stream)
+        fetcher = WindowFetcher(source)
+        async for window in fetcher.windows(start, end, initial_span=initial_span):
+            if stream.name == LEADS_STREAM:
+                records = [r for r in (self._to_lead_record(a) for a in window.rows) if r is not None]
+            else:
+                field_map = _ACTIVITY_FIELD_MAP.get(stream.name, {})
+                records = [
+                    r for r in (self._to_activity_record(stream, row, field_map) for row in window.rows) if r
+                ]
+            yield WindowBatch(
+                start=window.start,
+                end=window.end,
+                records=records,
+                source_count=window.source_count,
+                fetched_rows=window.fetched_rows,
+                distinct_ids=window.distinct,
+                unmappable=window.unmappable,
+                api_calls=window.api_calls,
+                split=window.split,
+                paged_fallback=window.paged_fallback,
+            )
 
-        page = 1
-        while True:
-            body = {
-                "Parameter": {"FromDate": from_date, "ToDate": to_date},
-                "Columns": {"Include_CSV": ",".join(LEAD_COLUMNS)},
-                # 5000/page, confirmed live as this endpoint's documented and
-                # actual maximum (docs/coverage/LSQ_DISCOVERY_2026-09-11.md §10).
-                "Paging": {"PageIndex": page, "PageSize": 5000},
-                # Sorted by CreatedOn (not ModifiedOn) deliberately — CreatedOn
-                # is the one column this session live-confirmed as a working
-                # Sorting.ColumnName for this endpoint; sort order here only
-                # affects pagination stability, not correctness, since every
-                # page in the window is consumed regardless of order.
-                "Sorting": {"ColumnName": "CreatedOn", "Direction": "1"},
-            }
-            self.ctx.progress.note(f"{LEADS_STREAM}: page {page} ({from_date}..{to_date})")
-            payload = await self._post("/v2/LeadManagement.svc/Leads.RecentlyModified", body)
-            leads = payload.get("Leads") or []
-            for entry in leads:
-                record = self._to_lead_record(entry)
-                if record is not None:
-                    yield record
-            if len(leads) < 5000:
-                break
-            page += 1
+    # --- verification helpers (used by the deletion sweep and count comparisons) ---
+    async def count_window(self, stream: StreamDefinition, start: datetime, end: datetime) -> int:
+        """The source's own total for a window — one cheap request (page size 1)."""
+        page = await self._source_for(stream).fetch(start, end, 1, 1)
+        return page.record_count
 
-    def _to_lead_record(self, entry: dict[str, Any]) -> Record | None:
-        d = {p.get("Attribute"): p.get("Value") for p in entry.get("LeadPropertyList", [])}
+    async def window_ids(self, stream: StreamDefinition, start: datetime, end: datetime) -> set[str]:
+        """Every id the source holds for a window, via the verified window fetcher."""
+        source = self._source_for(stream)
+        ids: set[str] = set()
+        async for w in WindowFetcher(source).windows(start, end):
+            ids.update(i for i in (source.row_id(r) for r in w.rows) if i)
+        return ids
+
+    async def record_exists(self, stream: StreamDefinition, record_id: str) -> bool:
+        """Independent by-id existence check — the second signal a tombstone needs.
+
+        Activities: `GetActivityDetails` answers a typed MXUnknownProspectActivityException
+        for a deleted/unknown id (live-verified). Leads: `Leads.GetById` returns an empty
+        list for an unknown id and a one-element list for a real one (live-verified).
+        Only a definite "not found" returns False; any other failure raises.
+        """
+        if stream.name == LEADS_STREAM:
+            found = await self._get("/v2/LeadManagement.svc/Leads.GetById", {"id": record_id})
+            return bool(found)
+        try:
+            await self._get("/v2/ProspectActivity.svc/GetActivityDetails", {"activityId": record_id})
+        except E.ConnectorError as exc:
+            if exc.code == E.ErrorCode.RESOURCE_NOT_FOUND:
+                return False
+            raise
+        return True
+
+    async def read_slice(self, stream: StreamDefinition, slice_: StreamSlice) -> AsyncIterator[Record]:
+        """Whole-day compatibility wrapper over `read_range` for callers that still
+        speak date slices. The sync runner uses `read_range` directly."""
+        start = _start_of_day(slice_.start_date or date.today())
+        end = _end_of_day(slice_.end_date or slice_.start_date or date.today())
+        async for batch in self.read_range(stream, start, end):
+            for record in batch.records:
+                yield record
+
+    # --- record builders ---------------------------------------------------
+    def _to_lead_record(self, d: dict[str, Any]) -> Record | None:
         prospect_id = d.get("ProspectID")
         if not prospect_id:
             return None
         modified_on = _parse_lsq_dt(d.get("ModifiedOn"))
         created_on = _parse_lsq_dt(d.get("CreatedOn"))
-        row_date = (modified_on or created_on or datetime.now(UTC)).date()
+        last_modified = _parse_lsq_dt(d.get("LeadLastModifiedOn")) or modified_on
+        # `date` keeps its long-standing meaning (ModifiedOn's day) so existing
+        # views/queries over leadsquared_leads.date do not shift meaning.
+        row_date = (modified_on or created_on or last_modified or datetime.now(UTC)).date()
         dimensions = {
             "prospect_id": prospect_id,
             "source": clean_dimension(d.get("Source")),
@@ -360,40 +559,18 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
             date=row_date,
             dimensions=dimensions,
             metrics={},
-            raw=d,
-            cursor_value=d.get("ModifiedOn"),
+            # The COMPLETE source payload. LeadSquared returns unset attributes as
+            # null; a missing key therefore means "unset" and only those are elided.
+            raw={k: v for k, v in d.items() if v is not None and k not in _ENVELOPE_ATTRIBUTES},
+            cursor_value=d.get("LeadLastModifiedOn") or d.get("ModifiedOn"),
+            extra={
+                "source_modified_on": last_modified,
+                "source_created_on": created_on,
+                "prospect_stage": d.get("ProspectStage"),
+                "owner_id": d.get("OwnerId"),
+                "deleted_at": None,
+            },
         )
-
-    async def _read_activities(
-        self, stream: StreamDefinition, event_code: int, slice_: StreamSlice
-    ) -> AsyncIterator[Record]:
-        start = slice_.start_date or date.today()
-        end = slice_.end_date or start
-        from_date = f"{start.isoformat()} 00:00:00"
-        to_date = f"{end.isoformat()} 23:59:59"
-        field_map = _ACTIVITY_FIELD_MAP.get(stream.name, {})
-
-        page = 1
-        while True:
-            body = {
-                "Parameter": {"FromDate": from_date, "ToDate": to_date, "ActivityEvent": event_code},
-                # 1000/page — this endpoint's confirmed hard cap; 2000 returned
-                # a live MXInvalidInputException naming it explicitly.
-                "Paging": {"PageIndex": page, "PageSize": 1000},
-                "Sorting": {"ColumnName": "CreatedOn", "Direction": "1"},
-            }
-            self.ctx.progress.note(f"{stream.name}: page {page} ({from_date}..{to_date})")
-            payload = await self._post(
-                "/v2/ProspectActivity.svc/CustomActivity/RetrieveByActivityEvent", body
-            )
-            rows = payload.get("List") or []
-            for row in rows:
-                record = self._to_activity_record(stream, row, field_map)
-                if record is not None:
-                    yield record
-            if len(rows) < 1000:
-                break
-            page += 1
 
     def _to_activity_record(
         self, stream: StreamDefinition, row: dict[str, Any], field_map: dict[str, str]
@@ -402,6 +579,7 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
         if not activity_id:
             return None
         created_on = _parse_lsq_dt(row.get("CreatedOn"))
+        modified_on = _parse_lsq_dt(row.get("ModifiedOn")) or created_on
         row_date = (created_on or datetime.now(UTC)).date()
         dimensions = {
             "prospect_activity_id": activity_id,
@@ -417,6 +595,11 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
         for slot, named in field_map.items():
             dimensions[named] = row.get(slot)
         dimensions.setdefault("booking_id", None)
+        code = event_for_stream_name(stream.name)
+        try:
+            event = int(row.get("ActivityEvent")) if row.get("ActivityEvent") is not None else code
+        except (TypeError, ValueError):
+            event = code
         return Record(
             stream=stream.name,
             key_values={"prospect_activity_id": activity_id},
@@ -424,7 +607,14 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
             dimensions=dimensions,
             metrics={},
             raw=row,
-            cursor_value=row.get("CreatedOn"),
+            cursor_value=row.get("ModifiedOn") or row.get("CreatedOn"),
+            extra={
+                "activity_event": event,
+                "activity_event_name": ACTIVITY_TYPES.get(event) if event is not None else None,
+                "source_modified_on": modified_on,
+                "source_created_on": created_on,
+                "deleted_at": None,
+            },
         )
 
 
@@ -436,12 +626,17 @@ registry.register(
             "A LeadSquared accessKey/secretKey pair with API access.",
             "The account's regional API host (e.g. api-in21.leadsquared.com) — LeadSquared "
             "shards accounts by region and there is no single global host.",
+            "LEADSQUARED_ACCESS_KEY / LEADSQUARED_SECRET_KEY / LEADSQUARED_HOST must be set in the "
+            "environment of the process that runs the SCHEDULER (the production service's .env), "
+            "not only on the machine an operator triggers manual syncs from.",
         ),
         caveats=(
             "Revenue/conversion semantics are intentionally not modelled yet. See "
             "docs/coverage/LSQ_VERIFICATION_2026-09-11.md §9 for the business decisions "
             "(authoritative revenue field, Payment Status meaning, repeat-customer policy) "
             "needed before any revenue/ROAS reporting is built on this connector's data.",
+            "Source deletions are detected only by the deletion sweep (app.sync.cli reconcile); "
+            "the warehouse is upsert history, not a mirror, until that sweep has run.",
         ),
         resource_label="LeadSquared Account",
         tags=("crm", "leadsquared", "attribution"),
@@ -449,4 +644,10 @@ registry.register(
 )
 
 
-__all__ = ["ACTIVITY_EVENTS", "LEADS_STREAM", "LeadSquaredCRMConnector"]
+__all__ = [
+    "ACTIVITY_EVENTS",
+    "ALL_ACTIVITY_EVENTS",
+    "LEADS_STREAM",
+    "LeadSquaredCRMConnector",
+    "lead_attributes",
+]
