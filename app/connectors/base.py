@@ -25,7 +25,7 @@ from __future__ import annotations
 import abc
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -160,6 +160,12 @@ class StreamDefinition:
     date_partitioned: bool = True
     # Documented reason this stream may be unavailable for some accounts.
     requires: list[str] = field(default_factory=list)
+    # "date"      whole-day slices, date cursor (analytics reports).
+    # "timestamp" second-resolution watermark; the connector implements
+    #             `read_range` and hands the runner one *verified complete*
+    #             window at a time (see WindowBatch). Record-grain sources whose
+    #             API filters on a modification timestamp use this.
+    cursor_kind: str = "date"
 
     @property
     def supports_incremental(self) -> bool:
@@ -196,6 +202,10 @@ class Record:
     raw: dict[str, Any] | None = None
     cursor_value: str | None = None
     currency: str | None = None
+    # Typed, non-JSON values for source-specific columns on the destination table
+    # (real datetimes, ints). The writer copies any key that matches a column;
+    # unlike `dimensions` these never round-trip through JSON.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -220,6 +230,33 @@ class EntityRecord:
 
 
 AnyRecord = Record | EntityRecord
+
+
+@dataclass(slots=True)
+class WindowBatch:
+    """One source window that the connector has verified as complete.
+
+    `start`/`end` are naive-UTC, second-resolution and inclusive. The counts are
+    the connector's evidence that nothing was skipped: the source-reported total,
+    the rows actually delivered, and the distinct ids among them. The runner
+    checks them against what the destination persisted *before* it moves the
+    checkpoint to `end`.
+    """
+
+    start: datetime
+    end: datetime
+    records: list[Record]
+    source_count: int
+    fetched_rows: int
+    distinct_ids: int
+    # Rows the source returned that had no usable identity (cannot be upserted).
+    # Accounted for explicitly so "no silent drops" holds.
+    unmappable: int = 0
+    api_calls: int = 0
+    # The window had to be split because it held more rows than one page.
+    split: bool = False
+    # A single second held more rows than one page, so ordered paging was used.
+    paged_fallback: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +446,24 @@ class BaseConnector(abc.ABC):
         An async generator, not a list: records stream to the destination in
         batches so memory stays flat regardless of how much a provider returns.
         """
+
+    def read_range(
+        self,
+        stream: StreamDefinition,
+        start: datetime,
+        end: datetime,
+        *,
+        initial_span: timedelta | None = None,
+    ) -> AsyncIterator[WindowBatch]:
+        """Yield consecutive, verified-complete windows covering [start, end].
+
+        Only implemented by `cursor_kind == "timestamp"` streams. Windows are
+        chronological, contiguous and gap-free; the runner may advance its
+        checkpoint to a window's `end` once that window is persisted.
+        `initial_span` hints the first window's length (a backfill starts small;
+        an incremental run passes None and asks for the whole range at once).
+        """
+        raise NotImplementedError(f"{self.connector_id} does not implement read_range")
 
     def slices(
         self,

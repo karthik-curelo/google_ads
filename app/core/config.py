@@ -61,14 +61,32 @@ class Settings(BaseSettings):
     # rate tiers (Pro: 5 bulk calls/5s, Super: 10/5s) — the account's actual
     # plan tier is not known (§11 of the implementation instructions: do not
     # assume it). Configurable so it can be raised once confirmed.
-    leadsquared_rate_per_second: float = 0.8
+    #
+    # Default lowered to 0.5/s after a live 429 at ~0.77/s sustained: the API budget
+    # belongs to the whole account, and other systems (booking/CRM automation) draw
+    # on it too. On a 429 the shared limiter halves itself for a while.
+    leadsquared_rate_per_second: float = 0.5
     leadsquared_burst: int = 2
+    # Calls per rolling 24h that ONE LeadSquared connection may spend. LeadSquared's documented
+    # base quota is 10,000/day for the whole account, shared with the booking/CRM automation
+    # that writes to it, so a backfill must never be able to spend all of it. A stream that
+    # hits its share stops cleanly at a checkpoint and resumes on the next run. 0 = unlimited.
+    leadsquared_daily_api_budget: int = 6000
 
     # --- sync engine -------------------------------------------------------
     scheduler_enabled: bool = True
     scheduler_poll_seconds: int = 30
     max_concurrent_syncs: int = 4
     sync_run_timeout_seconds: int = 10800
+    # A connection lease is renewed every `sync_heartbeat_seconds`; a lease not
+    # renewed for `sync_lease_seconds` is expired and may be taken over. Keep
+    # lease >= ~3x heartbeat so one slow renewal does not forfeit a healthy run.
+    sync_lease_seconds: int = 300
+    sync_heartbeat_seconds: int = 60
+    # Optional stable identity for THIS process. With it set, a restart reclaims its
+    # own previous incarnation's locks immediately instead of waiting out the lease.
+    # Must be unique per running process — never share one value across instances.
+    worker_id: str = ""
     default_lookback_days: int = 3
     default_backfill_days: int = 90
     http_timeout_seconds: float = 120.0

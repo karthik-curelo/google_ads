@@ -117,9 +117,12 @@ async def test_connection_lifecycle_end_to_end(client, session, org):
     if outcome is None:
         import asyncio
 
-        for _ in range(50):
+        for _ in range(400):
             detail = (await client.get(f"/api/v1/connections/{conn_id}", headers=H)).json()
-            if detail["status"] != "syncing":
+            # The winner has claimed the lease but may not have created its run yet
+            # (status still "pending"): wait for a real, finished run — not merely
+            # for "not syncing".
+            if detail["latest_run"] and detail["status"] not in ("syncing", "pending"):
                 break
             await asyncio.sleep(0.05)
         assert detail["latest_run"]["status"] == "succeeded"

@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from typing import Any
 
-from sqlalchemy import or_, update
+from sqlalchemy import or_, select, update
 
 from app.connectors import errors as E
 from app.connectors.base import (
@@ -38,9 +40,10 @@ from app.connectors.base import (
     StaticTokenProvider,
     StreamDefinition,
     SyncMode,
+    WindowBatch,
 )
 from app.connectors.registry import load_connectors
-from app.connectors.slicing import resolve_sync_window
+from app.connectors.slicing import parse_ts, resolve_sync_window
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
@@ -55,20 +58,28 @@ from app.models import (
     RUN_CANCELLED,
     RUN_FAILED,
     RUN_PARTIAL,
+    RUN_RETRYING,
     RUN_RUNNING,
     RUN_SUCCEEDED,
     Connection,
     SyncError,
     SyncRun,
+    SyncState,
     SyncStreamStat,
 )
 from app.oauth.service import DatabaseTokenProvider
-from app.sync.state import commit_state, load_state
+from app.sync import leases
+from app.sync.state import commit_state, commit_state_ts, is_ts_state, load_state
 from app.sync.writer import DestinationWriter, WriteResult
 
 logger = get_logger(__name__)
 
 _BATCH = 1000  # records buffered before a destination flush
+
+# Timestamp-cursor streams (see StreamDefinition.cursor_kind).
+DEFAULT_TS_FLOOR = datetime(2000, 1, 1)  # "beginning of time" when no backfill start is set
+DEFAULT_SAFETY_SECONDS = 30  # never read up to "now": rows still being committed
+DEFAULT_LOOKBACK_HOURS = 24  # overlap re-read each run; upserts make it idempotent
 
 _HEALTH_TO_CONN_STATUS = {
     HealthStatus.NEEDS_REAUTH: CONN_NEEDS_REAUTH,
@@ -87,6 +98,11 @@ class SyncOutcome:
     records_inserted: int = 0
     records_updated: int = 0
     records_skipped: int = 0
+    records_failed: int = 0
+    api_calls: int = 0
+    retry_count: int = 0
+    rate_limit_events: int = 0
+    warnings: int = 0
     streams_ok: list[str] = field(default_factory=list)
     streams_failed: list[str] = field(default_factory=list)
     error_code: str | None = None
@@ -109,20 +125,34 @@ class RunProgress:
         self._detail: str | None = None
         self._slices_done = 0
         self._slices_total = 0
+        self._status = RUN_RUNNING
+
+    def _resume(self) -> bool:
+        """True if we were RETRYING and progress just resumed (write it now)."""
+        was_retrying = self._status == RUN_RETRYING
+        self._status = RUN_RUNNING
+        return was_retrying
 
     def phase(self, phase: str, detail: str | None = None) -> None:
         self._phase = phase
         self._detail = detail
+        self._status = RUN_RUNNING
         self._flush(force=True)
 
     def note(self, detail: str) -> None:
         self._detail = detail
-        self._flush(force=False)
+        self._flush(force=self._resume())
 
     def slice_progress(self, stream: str, completed: int, total: int) -> None:
         self._slices_done, self._slices_total = completed, total
         self._detail = f"{stream}: slice {completed}/{total}"
-        self._flush(force=False)
+        self._flush(force=self._resume())
+
+    def on_retry(self, code: str, attempt: int, delay: float) -> None:
+        """HttpClient hook: a provider call failed transiently and is backing off."""
+        self._status = RUN_RETRYING
+        self._detail = f"retrying after {code} (attempt {attempt}, backing off {delay:.0f}s)"
+        self._flush(force=True)
 
     def _flush(self, *, force: bool) -> None:
         now = time.monotonic()
@@ -142,9 +172,77 @@ class RunProgress:
                 run.phase_detail = (self._detail or "")[:2000] or None
                 run.slices_completed = self._slices_done
                 run.slices_total = self._slices_total
+                if run.status in (RUN_RUNNING, RUN_RETRYING):
+                    run.status = self._status
                 await session.commit()
         except Exception:  # pragma: no cover - telemetry only
             logger.debug("progress write failed", exc_info=True)
+
+
+class ApiBudget:
+    """A rolling-24h cap on provider calls for one connection, shared fairly by its streams.
+
+    `used_before` is what the connection's earlier runs spent in the last 24 hours (from
+    `sync_runs.api_calls`); this run's own calls are read live from the connector's HTTP
+    counter. Streams run one after another; each may spend what is left minus a small reserve
+    for every stream still to run (never less than an equal share), so one enormous backlog
+    (Phone Call - Outbound, ~2.9M rows) cannot starve the streams behind it to nothing. A stream
+    that reaches its cap stops at a checkpoint and simply continues on the next run — nothing is
+    lost, only deferred. `limit <= 0` disables the cap.
+    """
+
+    def __init__(self, limit: int, used_before: int, connector: Any, streams_total: int) -> None:
+        self.limit = limit
+        self.used_before = used_before
+        self.connector = connector
+        self.streams_left = max(1, streams_total)
+        self._calls_at_start = self._calls()
+
+    def _calls(self) -> int:
+        return _http_snapshot(self.connector)["calls"]
+
+    @property
+    def enabled(self) -> bool:
+        return self.limit > 0
+
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used_before - (self._calls() - self._calls_at_start))
+
+    # Calls held back for EACH stream still to run: enough for an empty or already-caught-up
+    # stream (a couple of requests), so none can be starved to zero by one before it.
+    RESERVE_PER_STREAM = 5
+
+    def stream_cap(self) -> int | None:
+        """Calls the stream about to start may spend, or None if uncapped.
+
+        Everything that is left except a small reserve for each stream still to run, and never
+        less than an equal share. (A plain equal split capped a 250k-row lead backlog at ~70
+        calls only because 80 other streams were empty and needed two calls apiece.)
+        """
+        if not self.enabled:
+            return None
+        remaining = self.remaining()
+        equal_share = remaining // self.streams_left
+        leaving_reserve = remaining - self.RESERVE_PER_STREAM * (self.streams_left - 1)
+        return max(1, equal_share, leaving_reserve)
+
+    def stream_done(self) -> None:
+        self.streams_left = max(1, self.streams_left - 1)
+
+
+async def _calls_used_last_24h(connection_id: int) -> int:
+    from sqlalchemy import func
+
+    since = datetime.now(UTC) - timedelta(hours=24)
+    async with SessionLocal() as session:
+        total = (
+            await session.execute(
+                select(func.coalesce(func.sum(SyncRun.api_calls), 0)).where(
+                    SyncRun.connection_id == connection_id, SyncRun.started_at >= since
+                )
+            )
+        ).scalar_one()
+    return int(total or 0)
 
 
 async def run_connection(
@@ -159,29 +257,27 @@ async def run_connection(
     single place that guarantees a connection is never actively syncing
     twice at once.
 
-    Concurrency: claims the connection's lock atomically (one conditional
+    Concurrency: claims the connection's lease atomically (one conditional
     UPDATE, not read-then-write, so it is race-safe across processes) before
     creating a SyncRun row or touching the connector at all. A caller that
-    already pre-claimed the lock with the *same* `worker_id` (the scheduler's
-    `_claim_due`/`trigger`, or `trigger_sync_detached`) reaffirms its own
-    claim here as a no-op; a bare call with no `worker_id` gets a fresh
-    unique one, so two independent direct calls never collide with each
-    other. If the lock is held by anyone else and isn't stale, this returns
-    `None` immediately — no SyncRun row, no connector work, nothing to clean
-    up. The lock is released in an outer `finally` that wraps the entire rest
-    of this function, so it comes back down even if something raises before
-    the connector is ever constructed — the exact gap where a hard-to-spot
-    production race (multiple scheduler processes vs. a direct call) used to
-    leave a connection locked with no SyncRun row ever created for it.
+    already pre-claimed the lease with the *same* `worker_id` (the scheduler's
+    claim, or `trigger_sync_detached`) reaffirms its own claim here as a no-op;
+    a bare call with no `worker_id` gets a fresh unique one, so two independent
+    direct calls never collide with each other. If the lease is held by anyone
+    else and has not expired, this returns `None` immediately — no SyncRun row,
+    no connector work, nothing to clean up.
+
+    The lease is renewed by a heartbeat for as long as the run lasts, so a live
+    run is never mistaken for a dead one however long it takes, and a worker
+    that loses its lease is cancelled (fenced) rather than allowed to keep
+    writing. The lease is released in an outer `finally` that wraps the entire
+    rest of this function, so it comes back down even if something raises before
+    the connector is ever constructed.
     """
     settings = get_settings()
     started = datetime.now(UTC)
-    effective_worker_id = worker_id or f"direct-{uuid.uuid4().hex[:12]}"
-    # Mirrors SyncScheduler._stale_after exactly (scheduler.py) — kept as an
-    # independent literal rather than an import so this claim has no
-    # dependency on the scheduler module; the two are meant to always agree,
-    # not to share code.
-    stale_cutoff = started - timedelta(seconds=settings.sync_run_timeout_seconds + 300)
+    effective_worker_id = worker_id or leases.new_worker_id("direct")
+    execution_id = uuid.uuid4().hex
 
     async with SessionLocal() as session:
         conn = await session.get(Connection, connection_id)
@@ -193,12 +289,11 @@ async def run_connection(
             .where(
                 Connection.id == connection_id,
                 or_(
-                    Connection.locked_at.is_(None),
-                    Connection.locked_at < stale_cutoff,
+                    leases.free(started, settings.sync_lease_seconds),
                     Connection.locked_by == effective_worker_id,
                 ),
             )
-            .values(locked_at=started, locked_by=effective_worker_id)
+            .values(**leases.lease_values(started, effective_worker_id, settings.sync_lease_seconds))
         )
         if claim.rowcount != 1:
             held_by = conn.locked_by  # read before rollback expires the ORM object
@@ -228,12 +323,47 @@ async def run_connection(
             sync_mode=sync_mode or "incremental",
             status=RUN_RUNNING,
             phase="authenticating",
+            execution_id=execution_id,
+            worker_id=effective_worker_id,
         )
         session.add(run)
         conn.status = "syncing"
         conn.last_run_at = started
         await session.commit()
         run_id = run.id
+
+    logger.info(
+        "sync run %s starting: execution=%s connection=%s trigger=%s worker=%s",
+        run_id,
+        execution_id,
+        connection_id,
+        trigger,
+        effective_worker_id,
+    )
+    # Whatever way this function is left - success, failure, cancellation at ANY await, or
+    # an error before the connector even exists - the run row must reach a terminal state.
+    # `_close_run` is idempotent and shielded so a second cancellation cannot interrupt it.
+    finalized = False
+    outcome: SyncOutcome | None = None
+    checkpoints_before: dict[str, str | None] | None = None
+
+    async def _close_run(final: SyncOutcome, *, owns_lease: bool = True) -> None:
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        await asyncio.shield(
+            _finalize(
+                connection_id,
+                run_id,
+                final,
+                started,
+                worker_id=effective_worker_id,
+                trigger=trigger,
+                owns_lease=owns_lease,
+                checkpoints_before=checkpoints_before,
+            )
+        )
 
     try:
         entry = load_connectors().get(connector_id)
@@ -273,58 +403,80 @@ async def run_connection(
 
         outcome = SyncOutcome(run_id=run_id, status=RUN_RUNNING)
         connector = connector_cls(ctx)
+        # Surface provider back-off as a RETRYING state instead of a silent stall.
+        with contextlib.suppress(Exception):
+            connector.http.on_retry = progress.on_retry
+        checkpoints_before = await _checkpoint_map(connection_id)
+        lease_lost = False
+        daily_limit = int(config.get("daily_api_budget", _default_daily_budget(settings, provider)) or 0)
+        budget = ApiBudget(
+            daily_limit, await _calls_used_last_24h(connection_id) if daily_limit > 0 else 0, connector, 1
+        )
 
-        try:
-            async with asyncio.timeout(settings.sync_run_timeout_seconds):
-                await _run_inner(
-                    connector=connector,
-                    ctx=ctx,
-                    progress=progress,
-                    writer=writer,
-                    run_id=run_id,
-                    connection_id=connection_id,
-                    org_id=org_id,
-                    configured_streams=configured_streams,
-                    sync_mode=sync_mode,
-                    backfill_start=backfill_start,
-                    lookback_days=lookback_days,
-                    default_backfill_days=settings.default_backfill_days,
-                    outcome=outcome,
+        async with leases.heartbeat(
+            connection_id,
+            effective_worker_id,
+            interval=settings.sync_heartbeat_seconds,
+            lease_seconds=settings.sync_lease_seconds,
+        ) as lease_lost_event:
+            try:
+                async with asyncio.timeout(settings.sync_run_timeout_seconds):
+                    await _run_inner(
+                        connector=connector,
+                        ctx=ctx,
+                        progress=progress,
+                        writer=writer,
+                        run_id=run_id,
+                        connection_id=connection_id,
+                        org_id=org_id,
+                        configured_streams=configured_streams,
+                        sync_mode=sync_mode,
+                        backfill_start=backfill_start,
+                        lookback_days=lookback_days,
+                        default_backfill_days=settings.default_backfill_days,
+                        config=config,
+                        outcome=outcome,
+                        budget=budget,
+                    )
+            except asyncio.CancelledError:
+                lease_lost = lease_lost_event.is_set()
+                outcome.status = RUN_CANCELLED
+                outcome.error_code = E.ErrorCode.CANCELLED
+                outcome.error_message = (
+                    "The sync's lease was lost to another worker; this run was stopped."
+                    if lease_lost
+                    else "The sync was cancelled."
                 )
-        except asyncio.CancelledError:
-            outcome.status = RUN_CANCELLED
-            outcome.error_code = E.ErrorCode.CANCELLED
-            outcome.error_message = "The sync was cancelled."
-            await _finalize(connection_id, run_id, outcome, started)
-            raise
-        except TimeoutError:
-            outcome.status = RUN_FAILED
-            outcome.error_code = E.ErrorCode.TIMEOUT
-            outcome.error_message = (
-                f"The sync exceeded its {settings.sync_run_timeout_seconds}s ceiling and was stopped."
-            )
-            outcome.will_retry = True
-            await _record_error(
-                run_id,
-                connection_id,
-                org_id,
-                E.timeout_error(outcome.error_message, provider=provider, connector_id=connector_id),
-            )
-        except E.ConnectorError as exc:
-            outcome.status = RUN_FAILED
-            outcome.error_code = exc.code
-            outcome.error_message = exc.message
-            outcome.will_retry = exc.retryable
-            await _record_error(run_id, connection_id, org_id, exc)
-        except Exception as exc:  # noqa: BLE001 - nothing escapes the runner untyped
-            wrapped = E.wrap_unexpected(exc, provider=provider, connector_id=connector_id)
-            outcome.status = RUN_FAILED
-            outcome.error_code = wrapped.code
-            outcome.error_message = wrapped.message
-            logger.exception("Unhandled error in sync run %s", run_id)
-            await _record_error(run_id, connection_id, org_id, wrapped)
-        finally:
-            await connector.aclose()
+                await _close_run(outcome, owns_lease=not lease_lost)
+                raise
+            except TimeoutError:
+                outcome.status = RUN_FAILED
+                outcome.error_code = E.ErrorCode.TIMEOUT
+                outcome.error_message = (
+                    f"The sync exceeded its {settings.sync_run_timeout_seconds}s ceiling and was stopped."
+                )
+                outcome.will_retry = True
+                await _record_error(
+                    run_id,
+                    connection_id,
+                    org_id,
+                    E.timeout_error(outcome.error_message, provider=provider, connector_id=connector_id),
+                )
+            except E.ConnectorError as exc:
+                outcome.status = RUN_FAILED
+                outcome.error_code = exc.code
+                outcome.error_message = exc.message
+                outcome.will_retry = exc.retryable
+                await _record_error(run_id, connection_id, org_id, exc)
+            except Exception as exc:  # noqa: BLE001 - nothing escapes the runner untyped
+                wrapped = E.wrap_unexpected(exc, provider=provider, connector_id=connector_id)
+                outcome.status = RUN_FAILED
+                outcome.error_code = wrapped.code
+                outcome.error_message = wrapped.message
+                logger.exception("Unhandled error in sync run %s", run_id)
+                await _record_error(run_id, connection_id, org_id, wrapped)
+            finally:
+                await connector.aclose()
 
         if outcome.status == RUN_RUNNING:
             if outcome.streams_failed and outcome.streams_ok:
@@ -334,29 +486,58 @@ async def run_connection(
             else:
                 outcome.status = RUN_SUCCEEDED
 
-        await _finalize(connection_id, run_id, outcome, started)
+        await _close_run(outcome)
+        logger.info(
+            "sync run %s finished: execution=%s status=%s fetched=%s inserted=%s updated=%s skipped=%s "
+            "failed=%s api_calls=%s retries=%s rate_limit_events=%s",
+            run_id,
+            execution_id,
+            outcome.status,
+            outcome.records_fetched,
+            outcome.records_inserted,
+            outcome.records_updated,
+            outcome.records_skipped,
+            outcome.records_failed,
+            outcome.api_calls,
+            outcome.retry_count,
+            outcome.rate_limit_events,
+        )
         return outcome
     finally:
-        await _release_lock(connection_id, effective_worker_id)
+        if not finalized:
+            # Left by a path that skipped normal finalization (a cancellation while the
+            # connector was closing or the final bookkeeping ran, or a failure during
+            # setup). Close the run row here; previously it stayed 'running' forever,
+            # because the lease was released and the reaper only looks at held leases.
+            exc = sys.exc_info()[1]
+            closing = outcome or SyncOutcome(run_id=run_id, status=RUN_RUNNING)
+            if isinstance(exc, asyncio.CancelledError) or exc is None:
+                closing.status = RUN_CANCELLED
+                closing.error_code = closing.error_code or E.ErrorCode.CANCELLED
+                closing.error_message = (
+                    closing.error_message or "The sync was interrupted before it finished."
+                )
+            else:
+                wrapped = E.wrap_unexpected(exc)
+                closing.status = RUN_FAILED
+                closing.error_code = wrapped.code
+                closing.error_message = wrapped.message
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await _close_run(closing)
+        await leases.release_lease(connection_id, effective_worker_id)
 
 
-async def _release_lock(connection_id: int, worker_id: str) -> None:
-    """Clear the lock claimed at the top of `run_connection`, but only if
-    it's still ours — guarded by `locked_by`, not an unconditional clear, so
-    a run that overran the stale-lock window and had its lock taken over by
-    a newer claimant can never clobber that claimant's lock on its way out.
-    `_finalize` also clears these columns on its own success path; this is
-    the unconditional backstop for every path that doesn't reach it,
-    including the gap before the connector is even constructed.
-    """
-    with contextlib.suppress(Exception):
-        async with SessionLocal() as session:
+async def _checkpoint_map(connection_id: int) -> dict[str, str | None]:
+    """{stream: cursor_value} for every stream of a connection."""
+    async with SessionLocal() as session:
+        rows = (
             await session.execute(
-                update(Connection)
-                .where(Connection.id == connection_id, Connection.locked_by == worker_id)
-                .values(locked_at=None, locked_by=None)
+                select(SyncState.stream, SyncState.cursor_value).where(
+                    SyncState.connection_id == connection_id
+                )
             )
-            await session.commit()
+        ).all()
+    return {row.stream: row.cursor_value for row in rows}
 
 
 async def _run_inner(
@@ -373,7 +554,9 @@ async def _run_inner(
     backfill_start: date | None,
     lookback_days: int,
     default_backfill_days: int,
+    config: dict[str, Any],
     outcome: SyncOutcome,
+    budget: ApiBudget | None = None,
 ) -> None:
     progress.phase("checking", "Verifying credentials and access")
     health = await connector.check_connection()
@@ -395,23 +578,42 @@ async def _run_inner(
         )
 
     today = datetime.now(UTC).date()
+    if budget is not None:
+        budget.streams_left = len(streams)
 
     for stream_def, mode in streams:
         stat = _new_stat(run_id, stream_def.name, mode)
+        http_before = _http_snapshot(connector)
+        cap = budget.stream_cap() if budget is not None else None
         try:
-            written = await _sync_stream(
-                connector=connector,
-                progress=progress,
-                writer=writer,
-                stream_def=stream_def,
-                mode=mode,
-                connection_id=connection_id,
-                today=today,
-                backfill_start=backfill_start,
-                lookback_days=lookback_days,
-                default_backfill_days=default_backfill_days,
-                stat=stat,
-            )
+            if stream_def.cursor_kind == "timestamp":
+                written = await _sync_stream_ts(
+                    connector=connector,
+                    progress=progress,
+                    writer=writer,
+                    stream_def=stream_def,
+                    mode=mode,
+                    connection_id=connection_id,
+                    config=config,
+                    backfill_start=backfill_start,
+                    stat=stat,
+                    outcome=outcome,
+                    call_cap=cap,
+                )
+            else:
+                written = await _sync_stream(
+                    connector=connector,
+                    progress=progress,
+                    writer=writer,
+                    stream_def=stream_def,
+                    mode=mode,
+                    connection_id=connection_id,
+                    today=today,
+                    backfill_start=backfill_start,
+                    lookback_days=lookback_days,
+                    default_backfill_days=default_backfill_days,
+                    stat=stat,
+                )
             outcome.records_fetched += written.fetched
             outcome.records_inserted += written.inserted
             outcome.records_updated += written.updated
@@ -419,6 +621,8 @@ async def _run_inner(
             outcome.streams_ok.append(stream_def.name)
             stat["status"] = RUN_SUCCEEDED
         except asyncio.CancelledError:
+            _close_stat(stat, connector, http_before, outcome)
+            await _persist_stat(stat)
             raise
         except E.ConnectorError as exc:
             outcome.streams_failed.append(stream_def.name)
@@ -432,6 +636,7 @@ async def _run_inner(
             if exc.code == E.ErrorCode.AUTHENTICATION_ERROR:
                 # Dead credentials: the rest of the streams will only fail the
                 # same way. Stop and let the connection go to needs_reauth.
+                _close_stat(stat, connector, http_before, outcome)
                 await _persist_stat(stat)
                 await _set_connection_status(connection_id, CONN_NEEDS_REAUTH, exc.message)
                 raise
@@ -443,7 +648,228 @@ async def _run_inner(
             stat["error_message"] = wrapped.message
             logger.exception("Stream %s failed in run %s", stream_def.name, run_id)
             await _record_error(run_id, connection_id, org_id, wrapped, stream=stream_def.name)
+        _close_stat(stat, connector, http_before, outcome)
         await _persist_stat(stat)
+        if budget is not None:
+            budget.stream_done()
+
+
+def _default_daily_budget(settings, provider: str) -> int:
+    return settings.leadsquared_daily_api_budget if provider == "leadsquared" else 0
+
+
+def _http_snapshot(connector) -> dict[str, int]:
+    """Provider-call counters of the connector's HTTP client (zeros if it has none)."""
+    try:
+        return connector.http.stats.snapshot()
+    except Exception:  # noqa: BLE001 - observability only
+        return {"calls": 0, "retries": 0, "rate_limit_events": 0}
+
+
+def _close_stat(stat: dict[str, Any], connector, http_before: dict[str, int], outcome: SyncOutcome) -> None:
+    """Stamp a stream's end time and its share of provider calls / retries / 429s."""
+    after = _http_snapshot(connector)
+    calls = after["calls"] - http_before["calls"]
+    retries = after["retries"] - http_before["retries"]
+    limited = after["rate_limit_events"] - http_before["rate_limit_events"]
+    finished = datetime.now(UTC)
+    stat["api_calls"] = calls
+    stat["retry_count"] = retries
+    stat["rate_limit_events"] = limited
+    stat["finished_at"] = finished
+    stat["duration_ms"] = int((finished - stat["started_at"]).total_seconds() * 1000)
+    outcome.api_calls += calls
+    outcome.retry_count += retries
+    outcome.rate_limit_events += limited
+    outcome.records_failed += stat["records_failed"]
+
+
+async def _sync_stream_ts(
+    *,
+    connector,
+    progress: RunProgress,
+    writer: DestinationWriter,
+    stream_def: StreamDefinition,
+    mode: SyncMode,
+    connection_id: int,
+    config: dict[str, Any],
+    backfill_start: date | None,
+    stat: dict[str, Any],
+    outcome: SyncOutcome,
+    call_cap: int | None = None,
+) -> WriteResult:
+    """Sync one timestamp-cursor stream — the checkpoint discipline in one place.
+
+    The connector hands over one *verified complete* window at a time
+    (WindowBatch). For each window, in order:
+
+        1. write it (one transactional upsert; idempotent, so replay is safe),
+        2. reconcile it — the source's count, the rows fetched, their distinct ids
+           and what the destination actually holds must all agree, else the
+           window fails and the checkpoint stays where it was,
+        3. only then advance the checkpoint to the window's end.
+
+    A crash at any point therefore re-reads at most the window in flight (crash
+    before 1, or between 1 and 3) — never skips one. Each run also re-reads a
+    lookback overlap before the checkpoint, so rows the source committed late are
+    picked up; the overlap's upserts are no-ops where nothing changed.
+    """
+    state = await load_state(connection_id, stream_def.name)
+    state.cursor_field = state.cursor_field or stream_def.default_cursor_field
+    had_state = is_ts_state(state)
+    stat["checkpoint_before"] = state.cursor_value if had_state else None
+    stat["checkpoint_after"] = stat["checkpoint_before"]
+
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    end_ts = now - timedelta(seconds=int(config.get("safety_seconds", DEFAULT_SAFETY_SECONDS)))
+    floor = datetime.combine(backfill_start, dtime.min) if backfill_start else DEFAULT_TS_FLOOR
+
+    if had_state and mode != SyncMode.FULL_REFRESH:
+        lookback = timedelta(hours=float(config.get("lookback_hours", DEFAULT_LOOKBACK_HOURS)))
+        start = max(floor, parse_ts(state.cursor_value) - lookback)
+        initial_span = None  # ask for the whole range: one request for a quiet stream
+        reason = f"incremental from checkpoint {state.cursor_value} with {lookback} lookback"
+    else:
+        start = floor
+        initial_span = timedelta(days=1)  # backfill: start small, then follow the density
+        reason = f"backfill from {start:%Y-%m-%d}"
+
+    total = WriteResult()
+    recon = {
+        "windows": 0,
+        "source_count": 0,
+        "fetched": 0,
+        "distinct": 0,
+        "persisted": 0,
+        "skipped": 0,
+        "unchanged": 0,
+        "unmappable": 0,
+        "split_windows": 0,
+        "paged_fallback_windows": 0,
+        "mismatches": 0,
+    }
+    stat["reconciliation"] = recon
+
+    if start > end_ts:
+        progress.note(f"{stream_def.name}: up to date")
+        return total
+
+    progress.phase("fetching", f"{stream_def.name}: {reason}")
+    calls_at_start = _http_snapshot(connector)["calls"]
+    windows = connector.read_range(stream_def, start, end_ts, initial_span=initial_span)
+    async for batch in windows:
+        written = WriteResult()
+        for i in range(0, len(batch.records), _BATCH):
+            written.add(await writer.write_records(stream_def, batch.records[i : i + _BATCH]))
+
+        recon["windows"] += 1
+        recon["source_count"] += batch.source_count
+        recon["fetched"] += batch.fetched_rows
+        recon["distinct"] += batch.distinct_ids
+        recon["persisted"] += written.persisted
+        recon["skipped"] += written.skipped
+        recon["unchanged"] += written.unchanged
+        recon["unmappable"] += batch.unmappable
+        recon["split_windows"] += int(batch.split)
+        recon["paged_fallback_windows"] += int(batch.paged_fallback)
+        stat["slices_completed"] = stat["slices_total"] = recon["windows"]
+
+        try:
+            _reconcile_window(batch, written)
+        except E.ConnectorError:
+            recon["mismatches"] += 1
+            stat["records_failed"] += max(0, batch.source_count - written.persisted)
+            total.add(written)
+            _fold_counts(stat, total)
+            raise
+
+        if batch.unmappable:
+            outcome.warnings += 1
+            logger.warning(
+                "%s window %s..%s: %d source row(s) carried no id and could not be stored",
+                stream_def.name,
+                batch.start,
+                batch.end,
+                batch.unmappable,
+            )
+        total.add(written)
+        total.skipped += batch.unmappable
+        # Every row of the window is now committed AND verified: only now may the
+        # checkpoint move.
+        await commit_state_ts(state, reached=batch.end, added_records=written.inserted + written.updated)
+        stat["checkpoint_after"] = state.cursor_value
+        progress.note(
+            f"{stream_def.name}: {recon['windows']} windows, {recon['source_count']} rows, "
+            f"checkpoint {state.cursor_value}"
+        )
+        if call_cap is not None and _http_snapshot(connector)["calls"] - calls_at_start >= call_cap:
+            # This stream has spent its share of today's API budget. Every window up to the
+            # checkpoint is persisted and verified, so stopping here loses nothing: the next
+            # run resumes from the checkpoint. Reported, not hidden.
+            recon["budget_deferred"] = True
+            outcome.warnings += 1
+            logger.warning(
+                "%s: daily API budget share reached after %d calls — deferring the rest to the next run "
+                "(checkpoint %s)",
+                stream_def.name,
+                call_cap,
+                state.cursor_value,
+            )
+            await windows.aclose()
+            break
+
+    stat["cursor_value"] = state.cursor_value
+    _fold_counts(stat, total)
+    return total
+
+
+def _fold_counts(stat: dict[str, Any], total: WriteResult) -> None:
+    stat["records_fetched"] = total.fetched
+    stat["records_inserted"] = total.inserted
+    stat["records_updated"] = total.updated
+    stat["records_skipped"] = total.skipped
+
+
+def _reconcile_window(batch: WindowBatch, written: WriteResult) -> None:
+    """Assert that one window is provably complete, or raise.
+
+    Every number must agree — this is the guard that turns a silent skip (a page
+    that quietly returned fewer rows, an empty page taken for the end, a write that
+    did not land) into a failed window that is retried instead of a hole:
+
+        source_count        what LeadSquared says the window contains
+        fetched_rows        rows actually delivered
+        distinct + unmapped delivered rows, de-duplicated, plus rows with no id
+        submitted           records handed to the destination
+        persisted           of those, rows found in the table after the commit
+    """
+    n = batch.source_count
+    problems: list[str] = []
+    if batch.fetched_rows != n:
+        problems.append(f"source reported {n} rows but {batch.fetched_rows} were delivered")
+    if batch.distinct_ids + batch.unmappable != n:
+        problems.append(
+            f"{batch.distinct_ids} distinct ids (+{batch.unmappable} without one) for {n} source rows"
+        )
+    if len(batch.records) != batch.distinct_ids:
+        problems.append(f"{batch.distinct_ids} distinct source rows but {len(batch.records)} records built")
+    if written.persisted + written.skipped != len(batch.records):
+        problems.append(
+            f"destination holds {written.persisted} of {len(batch.records)} submitted records "
+            f"({written.skipped} rejected by validation)"
+        )
+    if problems:
+        raise E.reconciliation_error(
+            f"Window {batch.start:%Y-%m-%d %H:%M:%S}..{batch.end:%Y-%m-%d %H:%M:%S} did not reconcile: "
+            + "; ".join(problems),
+            technical_details={
+                "window": [batch.start.isoformat(), batch.end.isoformat()],
+                "source_count": n,
+                "fetched": batch.fetched_rows,
+                "distinct": batch.distinct_ids,
+                "persisted": written.persisted,
+            },
+        )
 
 
 async def _sync_stream(
@@ -603,6 +1029,15 @@ def _new_stat(run_id: int, stream: str, mode: SyncMode) -> dict[str, Any]:
         "cursor_value": None,
         "error_code": None,
         "error_message": None,
+        "started_at": datetime.now(UTC),
+        "finished_at": None,
+        "duration_ms": None,
+        "records_failed": 0,
+        "retry_count": 0,
+        "rate_limit_events": 0,
+        "checkpoint_before": None,
+        "checkpoint_after": None,
+        "reconciliation": None,
     }
 
 
@@ -666,8 +1101,25 @@ async def _set_connection_status(connection_id: int, status: str, detail: str | 
         await session.commit()
 
 
-async def _finalize(connection_id: int, run_id: int, outcome: SyncOutcome, started: datetime) -> None:
+async def _finalize(
+    connection_id: int,
+    run_id: int,
+    outcome: SyncOutcome,
+    started: datetime,
+    *,
+    worker_id: str,
+    trigger: str,
+    owns_lease: bool = True,
+    checkpoints_before: dict[str, str | None] | None = None,
+) -> None:
+    """Close the run row and update the connection's health and schedule.
+
+    `owns_lease=False` (this worker was fenced off by lease expiry) closes only the
+    run row: another worker now owns the connection, so its status, schedule and
+    lock are not ours to touch.
+    """
     finished = datetime.now(UTC)
+    checkpoints_after = await _checkpoint_map(connection_id)
     async with SessionLocal() as session:
         run = await session.get(SyncRun, run_id)
         conn = await session.get(Connection, connection_id)
@@ -679,22 +1131,54 @@ async def _finalize(connection_id: int, run_id: int, outcome: SyncOutcome, start
             run.records_inserted = outcome.records_inserted
             run.records_updated = outcome.records_updated
             run.records_skipped = outcome.records_skipped
+            run.records_failed = outcome.records_failed
+            run.api_calls = outcome.api_calls
+            run.retry_count = outcome.retry_count
+            run.rate_limit_events = outcome.rate_limit_events
+            run.warnings = outcome.warnings
+            run.state_before = checkpoints_before
+            run.state_after = checkpoints_after
             run.phase = "completed" if outcome.ok else "failed"
             if outcome.error_code and run.error_code is None:
                 run.error_code = outcome.error_code
                 run.error_message = outcome.error_message
             run.will_retry = outcome.will_retry
-        if conn is not None:
+        if conn is not None and owns_lease:
+            scheduled = trigger == "schedule"
             conn.last_run_at = finished
+            if scheduled:
+                conn.last_scheduled_run_at = finished
             written = outcome.records_inserted + outcome.records_updated
             conn.total_records_synced = (conn.total_records_synced or 0) + written
             if outcome.ok:
                 conn.last_success_at = finished
-                conn.consecutive_failures = 0
-                conn.status = CONN_HEALTHY
-                conn.status_detail = None
-                conn.last_error_code = None
-                conn.last_error_message = None
+                if scheduled:
+                    conn.last_scheduled_success_at = finished
+                    conn.consecutive_scheduled_failures = 0
+                if conn.consecutive_scheduled_failures and not scheduled:
+                    # A manual run succeeded, but the SCHEDULED path is broken. A manual
+                    # run executes in the operator's environment; the scheduler process
+                    # may lack configuration the operator has (this is exactly how nine
+                    # scheduled LeadSquared runs failed while manual runs kept
+                    # succeeding). It must not paper over the failing schedule: the
+                    # data landed, but the connection stays in error until a
+                    # *scheduled* run succeeds.
+                    conn.status = (
+                        CONN_INVALID_CONFIG
+                        if conn.last_error_code == E.ErrorCode.INVALID_CONFIGURATION
+                        else CONN_ERROR
+                    )
+                    conn.status_detail = (
+                        f"A manual sync succeeded, but the last {conn.consecutive_scheduled_failures} scheduled "
+                        f"run(s) failed ({conn.last_error_code}: {conn.last_error_message}). The scheduler "
+                        "process's environment may differ from the one used for manual runs."
+                    )[:2000]
+                else:
+                    conn.consecutive_failures = 0
+                    conn.status = CONN_HEALTHY
+                    conn.status_detail = None
+                    conn.last_error_code = None
+                    conn.last_error_message = None
             elif outcome.status == RUN_CANCELLED:
                 # A cancellation means our own process was shut down/restarted
                 # mid-sync — it says nothing about the connection or
@@ -712,13 +1196,18 @@ async def _finalize(connection_id: int, run_id: int, outcome: SyncOutcome, start
                     conn.status = CONN_ERROR if conn.consecutive_failures else CONN_HEALTHY
             else:
                 conn.consecutive_failures = (conn.consecutive_failures or 0) + 1
+                if scheduled:
+                    conn.consecutive_scheduled_failures = (conn.consecutive_scheduled_failures or 0) + 1
                 conn.last_error_code = outcome.error_code
                 conn.last_error_message = outcome.error_message
                 if conn.status in ("syncing", CONN_HEALTHY):
                     conn.status = CONN_ERROR
             conn.next_run_at = _next_run_at(conn, finished, outcome)
-            conn.locked_at = None
-            conn.locked_by = None
+            # Clear the lock only if it is still ours — never a successor's.
+            if conn.locked_by == worker_id:
+                conn.locked_at = None
+                conn.locked_by = None
+                conn.lease_expires_at = None
         await session.commit()
 
 

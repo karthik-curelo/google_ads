@@ -98,6 +98,10 @@ class RateLimiter:
 class HttpStats:
     calls: int = 0
     retries: int = 0
+    # Times the provider told us to slow down (HTTP 429 / a rate-limit-classified
+    # error). Distinct from `rate_limit_waits`, which is time *we* spent waiting
+    # on our own limiter.
+    rate_limit_events: int = 0
     rate_limit_waits: float = 0.0
     bytes_received: int = 0
     statuses: dict[int, int] = field(default_factory=dict)
@@ -106,6 +110,35 @@ class HttpStats:
         self.calls += 1
         self.bytes_received += size
         self.statuses[status] = self.statuses.get(status, 0) + 1
+
+    def snapshot(self) -> dict[str, int]:
+        """Counters a caller can diff around a unit of work (one stream)."""
+        return {"calls": self.calls, "retries": self.retries, "rate_limit_events": self.rate_limit_events}
+
+
+# One limiter per provider key, shared by every client in the process. Per-client
+# limiters (the old behaviour) let N concurrent connections of one provider each
+# spend the full budget, so together they exceeded it.
+_SHARED_LIMITERS: dict[tuple, RateLimiter] = {}
+
+
+def shared_rate_limiter(key: tuple, rate_per_second: float, burst: int) -> RateLimiter:
+    """Return the process-wide limiter for `key`, creating it on first use.
+
+    The first caller's rate/burst win; later callers with the same key share that
+    bucket rather than reconfiguring it, so workers can never collectively exceed
+    what the first one was allowed. Scope is one process — a multi-process deploy
+    needs a provider-wide limiter service; that ceiling is documented, not hidden.
+    """
+    limiter = _SHARED_LIMITERS.get(key)
+    if limiter is None:
+        limiter = _SHARED_LIMITERS[key] = RateLimiter(rate_per_second=rate_per_second, burst=burst)
+    return limiter
+
+
+def reset_shared_rate_limiters() -> None:
+    """Test hook: forget every shared limiter."""
+    _SHARED_LIMITERS.clear()
 
 
 ClassifyFn = Callable[[httpx.Response], E.ConnectorError | None]
@@ -132,6 +165,9 @@ class HttpClient:
         self.retry = retry or RetryPolicy()
         self.limiter = rate_limiter or RateLimiter()
         self.stats = HttpStats()
+        # Called as on_retry(error_code, attempt, delay_seconds) just before a
+        # backoff sleep, so the runner can surface a RETRYING state.
+        self.on_retry: Callable[[str, int, float], None] | None = None
         self.provider = provider
         self.connector_id = connector_id
         self._classify = classify
@@ -260,6 +296,14 @@ class HttpClient:
                     error.retry_after_seconds = self._retry_after(response)
                 last_error = error
 
+                if error.code == E.ErrorCode.RATE_LIMIT_ERROR or response.status_code == 429:
+                    self.stats.rate_limit_events += 1
+                    # The provider is telling us we are too fast: halve our own
+                    # throughput for a while instead of hammering the same limit
+                    # again on the very next call (and every sibling worker
+                    # sharing this limiter slows down with us).
+                    self.limiter.penalize(2.0, error.retry_after_seconds or 30.0)
+
                 if not error.retryable:
                     raise error
 
@@ -274,6 +318,11 @@ class HttpClient:
                 )
                 break
             self.stats.retries += 1
+            if self.on_retry is not None:
+                try:
+                    self.on_retry(last_error.code, attempt + 1, delay)
+                except Exception:  # pragma: no cover - never let telemetry break a sync
+                    logger.debug("on_retry hook failed", exc_info=True)
             logger.info(
                 "Retrying %s %s in %.1fs (attempt %d/%d, %s)",
                 method,

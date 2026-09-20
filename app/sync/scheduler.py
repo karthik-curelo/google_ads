@@ -1,40 +1,55 @@
 """In-process sync scheduler (§13).
 
-A single asyncio task polls for due connections, claims each with a compare-and-
-swap on its lock columns, and runs it — no broker, because the repo has none and
-§33 rules out adding one. The CAS claim is what makes "never run one connection
-twice at once" true even if a manual "Sync now" lands mid-poll.
+A single asyncio task polls for due connections, claims them with one atomic
+statement (app/sync/leases.py) and runs each — no broker, because the repo has none
+and §33 rules out adding one.
 
-ponytail: single process. The lock is a DB row, so a second *process* would be
-safe against double-runs too, but nothing here elects a leader — run exactly one
-scheduler. Move the claim to SELECT ... FOR UPDATE SKIP LOCKED and run N workers
-if throughput ever needs it.
+Safety properties, and what enforces each:
+
+  one run per connection      the connection row is a lease; claiming is a single
+                              conditional UPDATE, and run_connection() re-claims
+                              atomically on entry, so a scheduler tick, "Sync now",
+                              a second scheduler process and a bare call can all
+                              race and exactly one proceeds;
+  crash recovery              the holder heartbeats; a lease not renewed for
+                              `sync_lease_seconds` is expired and reclaimed — by the
+                              next tick of *any* scheduler, not only after a restart;
+  multiple instances          each process has a unique worker_id, the claim uses
+                              FOR UPDATE SKIP LOCKED, and the reaper only touches
+                              expired leases (or our own previous incarnation's,
+                              when a stable WORKER_ID is configured) — never a lock
+                              another live instance is heartbeating;
+  bounded concurrency         at most `max_concurrent_syncs` runs at once. Different
+                              connections run concurrently; provider API budgets are
+                              shared through the process-wide rate limiters, so
+                              concurrency cannot multiply the request rate.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 
 from app.connectors import errors as E
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
-from app.models import CONN_ERROR, CONN_HEALTHY, CONN_PAUSED, RUN_CANCELLED, RUN_RUNNING, Connection, SyncRun
+from app.models import CONN_ERROR, CONN_HEALTHY, RUN_CANCELLED, RUN_RETRYING, RUN_RUNNING, Connection, SyncRun
+from app.sync import leases
 
 logger = get_logger(__name__)
 
 
 class SyncScheduler:
-    def __init__(self, *, worker_id: str = "scheduler-1") -> None:
+    def __init__(self, *, worker_id: str | None = None) -> None:
         settings = get_settings()
-        self.worker_id = worker_id
+        self.worker_id = worker_id or settings.worker_id or leases.new_worker_id("scheduler")
         self.poll_seconds = settings.scheduler_poll_seconds
         self.max_concurrent = max(1, settings.max_concurrent_syncs)
-        self._stale_after = settings.sync_run_timeout_seconds + 300
+        self._lease_seconds = settings.sync_lease_seconds
         self._sem = asyncio.Semaphore(self.max_concurrent)
         self._running: dict[int, asyncio.Task] = {}
         self._loop_task: asyncio.Task | None = None
@@ -48,62 +63,93 @@ class SyncScheduler:
         self._stop.clear()
         self._loop_task = asyncio.create_task(self._loop(), name="sync-scheduler")
         logger.info(
-            "Sync scheduler started (poll=%ss, max_concurrent=%s)",
+            "Sync scheduler %s started (poll=%ss, max_concurrent=%s, lease=%ss)",
+            self.worker_id,
             self.poll_seconds,
             self.max_concurrent,
+            self._lease_seconds,
         )
 
-    async def _reap_orphaned_locks(self) -> None:
-        """Recover from a hard process kill mid-sync — no graceful shutdown,
-        no chance for run_connection's own CancelledError handling to run, so
-        a connection can be left locked and `status='syncing'` forever, only
-        reclaimable by `_claim_due`'s stale-lock check after `_stale_after`
-        (sync_run_timeout_seconds + 300s — up to ~3h). This is a single-
-        process design (see module docstring), so on a *fresh* start every
-        lock still held is necessarily orphaned — nothing else could
-        legitimately hold one yet. Clear them immediately instead of waiting
-        out the stale window, and treat it the same as a graceful
-        cancellation (app/sync/runner.py's _finalize): not a real failure, so
-        no consecutive_failures bump and no false "error" status — only a
-        connection with a genuine prior failure streak keeps showing error.
+    async def _reap_orphaned_locks(self) -> int:
+        """Recover connections whose worker died mid-sync. Returns how many.
+
+        Only reaps a lock that is *expired* (its heartbeat stopped: the holder is
+        dead or partitioned) or that belongs to this very worker_id but is not being
+        run by this process (a previous incarnation, when a stable WORKER_ID is
+        configured). A fresh lease held by another instance is left alone — the old
+        "every lock at startup is an orphan" rule was only true for exactly one
+        process, and would have killed a live sibling's run.
+
+        Each reap is compare-and-set on the (locked_by, locked_at) it observed, so it
+        loses cleanly to a heartbeat that renews in the same instant. It is treated
+        like a graceful cancellation (runner._finalize): the orphaned run is closed
+        as cancelled, nothing counts as a failure, the connection is due again.
         """
         now = datetime.now(UTC)
+        reaped = 0
         async with SessionLocal() as session:
-            stuck = (
-                (await session.execute(select(Connection).where(Connection.locked_at.isnot(None))))
+            candidates = (
+                (
+                    await session.execute(
+                        select(Connection).where(
+                            Connection.locked_at.isnot(None),
+                            leases.expired(now, self._lease_seconds)
+                            | (Connection.locked_by == self.worker_id),
+                        )
+                    )
+                )
                 .scalars()
                 .all()
             )
-            if not stuck:
-                return
-            for conn in stuck:
-                run = (
-                    await session.execute(
-                        select(SyncRun)
-                        .where(SyncRun.connection_id == conn.id, SyncRun.status == RUN_RUNNING)
-                        .order_by(SyncRun.id.desc())
-                        .limit(1)
+            for conn in candidates:
+                if conn.id in self._running:
+                    continue  # ours and genuinely in flight
+                held_by, held_at = conn.locked_by, conn.locked_at
+                cas = await session.execute(
+                    update(Connection)
+                    .where(
+                        Connection.id == conn.id,
+                        Connection.locked_by == held_by,
+                        Connection.locked_at == held_at,
                     )
-                ).scalar_one_or_none()
-                if run is not None:
+                    .values(locked_at=None, locked_by=None, lease_expires_at=None)
+                )
+                if cas.rowcount != 1:
+                    continue  # renewed or re-claimed in the meantime
+                runs = (
+                    (
+                        await session.execute(
+                            select(SyncRun).where(
+                                SyncRun.connection_id == conn.id,
+                                SyncRun.status.in_((RUN_RUNNING, RUN_RETRYING)),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for run in runs:
                     run.status = RUN_CANCELLED
                     run.finished_at = now
                     run.phase = "failed"
                     if run.error_code is None:
                         run.error_code = E.ErrorCode.CANCELLED
-                        run.error_message = "Orphaned by a process restart — recovered at startup."
+                        run.error_message = (
+                            "Orphaned by a process restart — recovered after its lease expired."
+                        )
+                await session.refresh(conn)
                 if conn.status == "syncing":
                     conn.status = CONN_ERROR if conn.consecutive_failures else CONN_HEALTHY
-                held_by = conn.locked_by
-                conn.locked_at = None
-                conn.locked_by = None
-                conn.next_run_at = now  # pick it back up on the very next tick, not whenever it was due
+                conn.next_run_at = now  # due again on the very next tick
+                reaped += 1
                 logger.warning(
-                    "Reaped orphaned lock on connection %s (held by %s) — process was killed mid-sync",
+                    "Reaped expired lease on connection %s (held by %s since %s) — worker died mid-sync",
                     conn.id,
                     held_by,
+                    held_at,
                 )
             await session.commit()
+        return reaped
 
     async def stop(self) -> None:
         self._stop.set()
@@ -117,7 +163,7 @@ class SyncScheduler:
         if self._running:
             await asyncio.gather(*self._running.values(), return_exceptions=True)
         self._running.clear()
-        logger.info("Sync scheduler stopped")
+        logger.info("Sync scheduler %s stopped", self.worker_id)
 
     # --- polling -------------------------------------------------------
     async def _loop(self) -> None:
@@ -132,6 +178,9 @@ class SyncScheduler:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
 
     async def _tick(self) -> None:
+        # Recover dead workers' connections first — any live scheduler does this,
+        # so a crash is repaired within one lease + one poll, not at next restart.
+        await self._reap_orphaned_locks()
         free = self.max_concurrent - len(self._running)
         if free <= 0:
             return
@@ -139,48 +188,7 @@ class SyncScheduler:
             self._spawn(connection_id, trigger="schedule")
 
     async def _claim_due(self, *, limit: int) -> list[int]:
-        now = datetime.now(UTC)
-        stale_cutoff = now - timedelta(seconds=self._stale_after)
-        async with SessionLocal() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(Connection.id)
-                        .where(
-                            Connection.enabled.is_(True),
-                            Connection.status != CONN_PAUSED,
-                            Connection.next_run_at.isnot(None),
-                            Connection.next_run_at <= now,
-                            or_(
-                                Connection.locked_at.is_(None),
-                                Connection.locked_at < stale_cutoff,
-                            ),
-                        )
-                        .order_by(Connection.next_run_at)
-                        .limit(limit)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-            claimed: list[int] = []
-            for cid in rows:
-                result = await session.execute(
-                    update(Connection)
-                    .where(
-                        Connection.id == cid,
-                        or_(
-                            Connection.locked_at.is_(None),
-                            Connection.locked_at < stale_cutoff,
-                        ),
-                    )
-                    .values(locked_at=now, locked_by=self.worker_id)
-                )
-                if result.rowcount == 1:
-                    claimed.append(cid)
-            await session.commit()
-            return claimed
+        return await leases.claim_due(self.worker_id, limit=limit, lease_seconds=self._lease_seconds)
 
     # --- run tracking -------------------------------------------------------
     def _spawn(self, connection_id: int, *, trigger: str, sync_mode: str | None = None) -> asyncio.Task:
@@ -208,37 +216,20 @@ class SyncScheduler:
                 logger.exception("Sync for connection %s raised", connection_id)
             finally:
                 self._running.pop(connection_id, None)
-                await self._clear_lock(connection_id)
-
-    async def _clear_lock(self, connection_id: int) -> None:
-        with contextlib.suppress(Exception):
-            async with SessionLocal() as session:
-                await session.execute(
-                    update(Connection)
-                    .where(Connection.id == connection_id)
-                    .values(locked_at=None, locked_by=None)
-                )
-                await session.commit()
+                await leases.release_lease(connection_id, self.worker_id)
 
     # --- manual trigger -------------------------------------------------------
     async def trigger(self, connection_id: int, *, sync_mode: str | None = None) -> bool:
-        """Claim and run now. False if already running or claim lost."""
+        """Claim and run now. False if already running or the claim was lost."""
         if connection_id in self._running:
             return False
-        now = datetime.now(UTC)
-        stale_cutoff = now - timedelta(seconds=self._stale_after)
-        async with SessionLocal() as session:
-            result = await session.execute(
-                update(Connection)
-                .where(
-                    Connection.id == connection_id,
-                    or_(Connection.locked_at.is_(None), Connection.locked_at < stale_cutoff),
-                )
-                .values(locked_at=now, locked_by=self.worker_id)
-            )
-            await session.commit()
-            if result.rowcount != 1:
-                return False
+        # A manual claim must not "re-enter" a lock that merely carries this
+        # scheduler's own id but belongs to a run we are not executing.
+        claimed = await leases.claim_connection(
+            connection_id, self.worker_id, lease_seconds=self._lease_seconds
+        )
+        if not claimed:
+            return False
         self._spawn(connection_id, trigger="manual", sync_mode=sync_mode)
         return True
 
@@ -257,27 +248,24 @@ class SyncScheduler:
 async def trigger_sync_detached(connection_id: int, *, sync_mode: str | None = None) -> None:
     """Fallback used when no scheduler is running (tests, scheduler disabled).
 
-    Claims the lock and runs inline in a background task so the API can return
-    immediately, same contract as SyncScheduler.trigger.
+    Claims the lease and runs inline in a background task so the API can return
+    immediately, same contract as SyncScheduler.trigger. The worker id is unique
+    per call — the old constant "detached" made two API processes look like one.
     """
     from app.sync.runner import run_connection
 
-    now = datetime.now(UTC)
-    async with SessionLocal() as session:
-        result = await session.execute(
-            update(Connection)
-            .where(Connection.id == connection_id, Connection.locked_at.is_(None))
-            .values(locked_at=now, locked_by="detached")
-        )
-        await session.commit()
-        if result.rowcount != 1:
-            return
-    with contextlib.suppress(Exception):
-        # worker_id must match the "detached" identity claimed just above —
-        # run_connection() now does its own atomic claim on entry, and a
-        # mismatched worker_id there would see this connection as already
-        # (validly) locked by someone else and decline to do any work at all.
-        await run_connection(connection_id, trigger="manual", sync_mode=sync_mode, worker_id="detached")
+    worker_id = leases.new_worker_id("detached")
+    settings = get_settings()
+    if not await leases.claim_connection(connection_id, worker_id, lease_seconds=settings.sync_lease_seconds):
+        return
+    try:
+        # worker_id must match the identity claimed just above — run_connection()
+        # does its own atomic claim on entry, and a mismatched id would see this
+        # connection as validly locked by someone else and decline to do any work.
+        with contextlib.suppress(Exception):
+            await run_connection(connection_id, trigger="manual", sync_mode=sync_mode, worker_id=worker_id)
+    finally:
+        await leases.release_lease(connection_id, worker_id)
 
 
 __all__ = ["SyncScheduler", "trigger_sync_detached"]

@@ -22,7 +22,7 @@ import httpx
 
 from app.connectors import errors as E
 from app.connectors.base import AuthType, BaseConnector, HealthReport, HealthStatus
-from app.connectors.http import HttpClient, RateLimiter, RetryPolicy
+from app.connectors.http import HttpClient, RetryPolicy, shared_rate_limiter
 from app.oauth.meta import classify_graph_error
 
 _HEALTH_MAP = {
@@ -57,6 +57,9 @@ class MetaConnector(BaseConnector):
         self._app_secret = (ps.get("meta_app_secret") or "").strip()
         self._usage_warned = False
 
+    def _app_id_key(self) -> str:
+        return (self.ctx.provider_settings.get("meta_app_id") or "").strip()
+
     @property
     def graph_base(self) -> str:
         return f"https://graph.facebook.com/{self._api_version}"
@@ -65,7 +68,8 @@ class MetaConnector(BaseConnector):
         return HttpClient(
             timeout=float(self.ctx.provider_settings.get("http_timeout_seconds", 120.0)),
             retry=RetryPolicy(max_attempts=5, base_delay=2.0, max_delay=90.0, max_elapsed=300.0),
-            rate_limiter=RateLimiter(rate_per_second=self.rate_per_second, burst=self.burst),
+            # Graph API usage is metered per app across Ads, Instagram and Pages, so they share one bucket.
+            rate_limiter=shared_rate_limiter(("meta", self._app_id_key()), self.rate_per_second, self.burst),
             max_concurrency=3,
             provider=self.provider,
             connector_id=self.connector_id,

@@ -37,6 +37,10 @@ class ErrorCode:
     NOT_SUPPORTED = "NOT_SUPPORTED"
     TIMEOUT = "TIMEOUT"
     CANCELLED = "CANCELLED"
+    # A window's source count, fetched rows, distinct ids and persisted rows did
+    # not agree — the data cannot be trusted as complete, so the checkpoint must
+    # not advance past it.
+    RECONCILIATION_FAILED = "RECONCILIATION_FAILED"
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 
@@ -257,6 +261,22 @@ def timeout_error(message: str, **kw: Any) -> ConnectorError:
         retryable=True,
         recoverable=False,
         default_user_action="The request took too long. The sync will retry.",
+        **kw,
+    )
+
+
+def reconciliation_error(message: str, **kw: Any) -> ConnectorError:
+    """Source and warehouse disagree for a window that was supposed to be complete.
+
+    Retryable: re-fetching the same window is exactly the repair (upserts are
+    idempotent and the checkpoint has not moved past it).
+    """
+    return _err(
+        ErrorCode.RECONCILIATION_FAILED,
+        message,
+        retryable=True,
+        recoverable=False,
+        default_user_action="The sync will retry this window. If it keeps failing, see the run's reconciliation detail.",
         **kw,
     )
 

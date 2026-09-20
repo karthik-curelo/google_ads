@@ -206,6 +206,13 @@ async def test_local_scheduler_does_not_runaway_poll_after_a_success(session, or
     sched.poll_seconds = 0.15  # far faster than production's 30s, so several ticks fit in a short test
     await sched.start()
     await asyncio.sleep(1.2)  # ~8 poll ticks at this rate
+    # Let the (single) run finish before stopping: how long one run takes depends on the
+    # database (about 2s on PostgreSQL without a connection pool), and the property under
+    # test is "no re-claim on later ticks", not "the run finishes inside 1.2s".
+    async with asyncio.timeout(30):
+        while sched.active:
+            await asyncio.sleep(0.05)
+    await asyncio.sleep(0.5)  # a few more ticks after completion: still must not re-run
     await sched.stop()
 
     runs = (await session.execute(select(SyncRun).where(SyncRun.connection_id == conn.id))).scalars().all()
@@ -215,3 +222,62 @@ async def test_local_scheduler_does_not_runaway_poll_after_a_success(session, or
     await session.refresh(conn)
     assert conn.locked_at is None and conn.locked_by is None
     assert conn.next_run_at > datetime.now(UTC)  # pushed a full interval out, not left "due"
+
+
+# --- a run row must always reach a terminal state, whichever await a cancellation lands on -------
+
+
+async def test_cancel_while_the_connector_is_closing_still_closes_the_run_row(session, org, monkeypatch):
+    """Live finding (PostgreSQL): a cancellation landing in `connector.aclose()` bypassed
+    finalization. The lease was released, so the reaper (which only looks at held leases)
+    never saw it, and the run stayed 'running' forever."""
+    conn = await _make_connection(session, org)
+    closing = asyncio.Event()
+
+    async def hangs_on_close(self):
+        closing.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(StubConnector, "aclose", hangs_on_close)
+    task = asyncio.create_task(run_connection(conn.id, trigger="schedule"))
+    await asyncio.wait_for(closing.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    run = (await session.execute(select(SyncRun))).scalar_one()
+    assert run.status == "cancelled" and run.finished_at is not None and run.error_code == "CANCELLED"
+    await session.refresh(conn)
+    assert conn.locked_by is None and conn.consecutive_failures == 0  # not a provider failure
+
+
+async def test_a_failure_before_the_connector_exists_closes_the_run_as_failed(session, org):
+    conn = await _make_connection(session, org, connector_id="does-not-exist")
+    with pytest.raises(E.ConnectorError):
+        await run_connection(conn.id, trigger="manual")
+    run = (await session.execute(select(SyncRun))).scalar_one()
+    assert run.status == "failed" and run.finished_at is not None and run.error_message
+    await session.refresh(conn)
+    assert conn.locked_at is None and conn.locked_by is None
+
+
+async def test_a_double_cancellation_cannot_interrupt_finalization(session, org, monkeypatch):
+    conn = await _make_connection(session, org)
+    closing = asyncio.Event()
+
+    async def hangs_on_close(self):
+        closing.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(StubConnector, "aclose", hangs_on_close)
+    task = asyncio.create_task(run_connection(conn.id, trigger="schedule"))
+    await asyncio.wait_for(closing.wait(), timeout=10)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()  # impatient caller: a second cancel while the first is being handled
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.3)  # the shielded finalization completes even though the task is gone
+    run = (await session.execute(select(SyncRun))).scalar_one()
+    await session.refresh(run)
+    assert run.status == "cancelled" and run.finished_at is not None

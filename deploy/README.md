@@ -52,6 +52,20 @@ Remember: the two OAuth redirect URIs in that file must be re-registered in
 the Google Cloud Console and Meta App dashboard to match the VM's real
 public URL before anyone reconnects an integration from this host.
 
+## 3b. Check the service's environment can run every scheduled connection
+
+The scheduler runs inside the service, so the service's `.env` — not your laptop's —
+must hold every connector's settings (LeadSquared's `LEADSQUARED_*` were once
+missing here, which failed every scheduled run silently). Before starting:
+
+```bash
+cd /opt/marketing-connectors
+sudo -u connectors ./.venv/bin/python -m app.sync.cli preflight   # exit 0 = every enabled connection can run
+```
+
+After starting, `curl http://127.0.0.1:8000/healthz` must say `"status": "ok"`; a
+`"degraded"` body lists the misconfigured connections and why.
+
 ## 4. Migrate + start
 
 ```bash

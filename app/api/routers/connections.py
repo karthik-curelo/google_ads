@@ -567,6 +567,9 @@ def _serialize(c: Connection) -> dict:
         "next_run_at": _iso(c.next_run_at),
         "total_records_synced": c.total_records_synced,
         "consecutive_failures": c.consecutive_failures,
+        "last_scheduled_run_at": _iso(c.last_scheduled_run_at),
+        "last_scheduled_success_at": _iso(c.last_scheduled_success_at),
+        "consecutive_scheduled_failures": c.consecutive_scheduled_failures,
         "destination": _destination_for(c.connector_id),
     }
 
@@ -598,6 +601,12 @@ def _serialize_run(r: SyncRun) -> dict:
         "records_inserted": r.records_inserted,
         "records_updated": r.records_updated,
         "records_skipped": r.records_skipped,
+        "records_failed": r.records_failed,
+        "api_calls": r.api_calls,
+        "retry_count": r.retry_count,
+        "rate_limit_events": r.rate_limit_events,
+        "execution_id": r.execution_id,
+        "worker_id": r.worker_id,
         "slices_completed": r.slices_completed,
         "slices_total": r.slices_total,
         "error_code": r.error_code,

@@ -9,7 +9,7 @@ diverge for our workload is INSERT ... ON CONFLICT, which is isolated in
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from functools import lru_cache
 from typing import Any
 
@@ -31,7 +31,13 @@ settings = get_settings()
 _is_sqlite = settings.database_url.startswith("sqlite")
 
 _engine_kwargs: dict[str, Any] = {"echo": settings.db_echo, "future": True}
-if not _is_sqlite:
+if not _is_sqlite and settings.testing:
+    # Each test runs on its own event loop; a pooled asyncpg connection from an earlier
+    # loop cannot be reused (or even closed) on the next. No pool under test.
+    from sqlalchemy.pool import NullPool
+
+    _engine_kwargs["poolclass"] = NullPool
+elif not _is_sqlite:
     # Connection pooling matters once several syncs write concurrently.
     _engine_kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True, pool_recycle=1800)
 
@@ -47,6 +53,9 @@ if _is_sqlite:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA busy_timeout=10000")
+        if settings.testing:
+            # Throwaway databases: fsync per commit only makes the per-test schema rebuild slow.
+            cursor.execute("PRAGMA synchronous=OFF")
         cursor.close()
 
 
@@ -93,6 +102,7 @@ async def bulk_upsert(
     conflict_columns: Sequence[str],
     update_columns: Sequence[str] | None = None,
     chunk_size: int = 500,
+    update_where: Callable[[Table, Any], Any] | None = None,
 ) -> int:
     """Batch INSERT ... ON CONFLICT DO UPDATE. Returns rows submitted.
 
@@ -100,6 +110,11 @@ async def bulk_upsert(
     recent days, so re-ingesting an overlapping window must correct rows rather
     than duplicate them. Chunked because both drivers bind one parameter per
     column per row and SQLite caps at 32k bind parameters.
+
+    `update_where(table, excluded)` returns a SQL condition that must hold for the
+    conflicting row to be overwritten. It runs *inside* the statement, so it is
+    atomic with the write: an older or replayed fetch can never clobber a newer
+    row, whatever order two workers happen to commit in.
 
     ponytail: supports exactly the two dialects we ship (postgresql, sqlite).
     Add a branch here if a third destination is ever needed.
@@ -131,6 +146,7 @@ async def bulk_upsert(
             stmt = stmt.on_conflict_do_update(
                 index_elements=list(conflict_columns),
                 set_={c: stmt.excluded[c] for c in update_columns},
+                where=update_where(table, stmt.excluded) if update_where is not None else None,
             )
         else:
             stmt = stmt.on_conflict_do_nothing(index_elements=list(conflict_columns))

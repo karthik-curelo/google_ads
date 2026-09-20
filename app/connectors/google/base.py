@@ -15,7 +15,7 @@ import httpx
 
 from app.connectors import errors as E
 from app.connectors.base import AuthType, BaseConnector, HealthReport, HealthStatus
-from app.connectors.http import HttpClient, RateLimiter, RetryPolicy
+from app.connectors.http import HttpClient, RetryPolicy, shared_rate_limiter
 
 # google.rpc.Code name -> our typed error. Google returns these as the string
 # `status` on the error body regardless of transport code.
@@ -49,7 +49,9 @@ class GoogleConnector(BaseConnector):
         return HttpClient(
             timeout=float(self.ctx.provider_settings.get("http_timeout_seconds", 120.0)),
             retry=RetryPolicy(max_attempts=5, base_delay=1.0, max_delay=60.0, max_elapsed=300.0),
-            rate_limiter=RateLimiter(rate_per_second=self.rate_per_second, burst=self.burst),
+            # One bucket per Google API in the process: connections of the same API (two GA4
+            # properties syncing at once) must share its quota, not each spend a full one.
+            rate_limiter=shared_rate_limiter(("google", self.connector_id), self.rate_per_second, self.burst),
             max_concurrency=4,
             provider=self.provider,
             connector_id=self.connector_id,

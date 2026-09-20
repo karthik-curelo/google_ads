@@ -6,6 +6,7 @@ import pytest
 
 from app.connectors import errors as E
 from app.connectors.registry import RegistryEntry, registry
+from app.core.config import get_settings
 from app.models import (
     Connection,
     GoogleAnalyticsPerformance,
@@ -186,15 +187,18 @@ async def test_scheduler_start_reaps_orphaned_lock_from_a_hard_kill(session, org
     """A hard process kill (no graceful shutdown, e.g. OOM-killer, a forced
     VM stop) leaves a connection locked and status='syncing' with no
     run_connection() call ever getting to run its own cleanup — previously
-    only recoverable after the ~3h stale-lock window in _claim_due. A fresh
-    scheduler start must reclaim it within seconds instead: clear the lock,
-    close out the orphaned "running" sync_runs row as cancelled (not
-    failed), and make it immediately due again — all without counting as a
-    failure, matching the graceful-cancellation behavior in _finalize."""
+    only recoverable after the run-timeout window. Now the lock is a lease that
+    its holder heartbeats: once it has gone un-renewed for `sync_lease_seconds`
+    the holder is dead, and the reap clears the lock, closes out the orphaned
+    "running" sync_runs row as cancelled (not failed), and makes the connection
+    immediately due again — all without counting as a failure, matching the
+    graceful-cancellation behavior in _finalize. (It deliberately does NOT reap a
+    fresh lease: with several instances that would kill a live sibling's run — see
+    tests/test_leases.py.)"""
     conn = await _make_connection(session, org)
     # Simulate exactly what a hard-killed run_connection() leaves behind:
-    # locked, "syncing", and an orphaned SyncRun stuck at status="running".
-    conn.locked_at = datetime.now(UTC) - timedelta(seconds=5)
+    # locked (lease long expired), "syncing", and an orphaned SyncRun at "running".
+    conn.locked_at = datetime.now(UTC) - timedelta(seconds=get_settings().sync_lease_seconds + 30)
     conn.locked_by = "scheduler-dead"
     conn.status = "syncing"
     conn.next_run_at = datetime.now(UTC) + timedelta(hours=2)  # far in the future
@@ -238,7 +242,7 @@ async def test_scheduler_start_reap_preserves_genuine_error_status(session, org)
     that silently cleared just because it also happened to be mid-sync when
     the process was killed."""
     conn = await _make_connection(session, org)
-    conn.locked_at = datetime.now(UTC) - timedelta(seconds=5)
+    conn.locked_at = datetime.now(UTC) - timedelta(seconds=get_settings().sync_lease_seconds + 30)
     conn.locked_by = "scheduler-dead"
     conn.status = "syncing"
     conn.consecutive_failures = 3

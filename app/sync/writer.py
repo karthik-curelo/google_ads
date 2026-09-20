@@ -21,7 +21,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from sqlalchemy import and_, or_
+
 from app.connectors.base import EntityRecord, Record, StreamDefinition
+from app.connectors.leadsquared.activity_catalog import event_for_stream_name
 from app.connectors.validation import validate_records
 from app.core.database import SessionLocal, bulk_insert, bulk_upsert
 from app.core.logging import get_logger
@@ -89,12 +92,9 @@ CONNECTOR_MODEL_MAP = {
 # `leadsquared_activities` instead. Checked before CONNECTOR_MODEL_MAP, so it
 # is a pure override — connectors absent here behave exactly as before.
 STREAM_MODEL_OVERRIDES: dict[str, dict[str, Any]] = {
-    "leadsquared": {
-        "booking_created": LeadsquaredActivity,
-        "post_booking_order_status": LeadsquaredActivity,
-        "booking_cancelled": LeadsquaredActivity,
-        "facebook_lead_ads_submissions": LeadsquaredActivity,
-    }
+    # Kept for explicit per-stream routing of any future multi-table connector.
+    # LeadSquared no longer needs entries here: every activity stream (all 84 types
+    # plus any type discovered later) is routed by `_model_for` below.
 }
 
 _ENTITY_CONFLICT = ("connection_id", "level", "external_id")
@@ -116,19 +116,28 @@ _ENTITY_UPDATE = (
 
 
 class WriteResult:
-    __slots__ = ("fetched", "inserted", "updated", "skipped")
+    __slots__ = ("fetched", "inserted", "updated", "skipped", "persisted", "unchanged")
 
     def __init__(self) -> None:
         self.fetched = 0
         self.inserted = 0
         self.updated = 0
         self.skipped = 0
+        # Existing rows that were re-submitted but NOT rewritten because the stored
+        # row was already current (the guarded upsert left them alone).
+        self.unchanged = 0
+        # Submitted rows found in the table AFTER the transaction committed —
+        # measured by a follow-up query, not inferred from the upsert. This is the
+        # number reconciliation compares with the source's count.
+        self.persisted = 0
 
     def add(self, other: WriteResult) -> None:
         self.fetched += other.fetched
         self.inserted += other.inserted
         self.updated += other.updated
         self.skipped += other.skipped
+        self.persisted += other.persisted
+        self.unchanged += other.unchanged
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -137,6 +146,33 @@ class WriteResult:
             "records_updated": self.updated,
             "records_skipped": self.skipped,
         }
+
+
+def _lsq_upsert_guard(table, excluded):
+    """When may an incoming LeadSquared row overwrite the stored one?
+
+    Evaluated by the database inside the INSERT ... ON CONFLICT statement, so it is
+    atomic with the write and holds no matter how two workers' commits interleave:
+
+      * the stored row has no source timestamp yet (written before this column
+        existed) -> take the incoming row;
+      * the incoming row is strictly newer -> take it;
+      * a tombstoned row reappeared at the source -> take it (clears `deleted_at`);
+      * same timestamp but different payload (e.g. the complete-payload upgrade of
+        an unchanged lead) -> take it;
+      * otherwise (older, or identical) -> leave the stored row alone, which makes
+        replaying an overlap window a no-op and stops a stale fetch from ever
+        overwriting fresher data.
+    """
+    return or_(
+        table.c.source_modified_on.is_(None),
+        excluded.source_modified_on > table.c.source_modified_on,
+        table.c.deleted_at.isnot(None),
+        and_(
+            excluded.source_modified_on == table.c.source_modified_on,
+            table.c.raw.is_distinct_from(excluded.raw),
+        ),
+    )
 
 
 class DestinationWriter:
@@ -163,8 +199,14 @@ class DestinationWriter:
     def _model_for(self, stream_name: str):
         """Resolve the destination table for one stream — almost always
         `self.model`, except for a connector with more than one destination
-        table (currently only LeadSquared's activity streams)."""
-        return STREAM_MODEL_OVERRIDES.get(self.connector_id, {}).get(stream_name) or self.model
+        table (LeadSquared: `leads` -> leadsquared_leads, every activity type ->
+        leadsquared_activities)."""
+        explicit = STREAM_MODEL_OVERRIDES.get(self.connector_id, {}).get(stream_name)
+        if explicit is not None:
+            return explicit
+        if self.connector_id == "leadsquared" and event_for_stream_name(stream_name) is not None:
+            return LeadsquaredActivity
+        return self.model
 
     # --- fact grain ------------------------------------------------------------
     async def write_records(
@@ -219,6 +261,7 @@ class DestinationWriter:
                     rows,
                     conflict_columns=("connection_id", "stream", "record_key"),
                     update_columns=tuple(update_cols),
+                    update_where=_lsq_upsert_guard if "source_modified_on" in model.__table__.c else None,
                 )
                 result.updated = existing
                 result.inserted = len(rows) - existing
@@ -226,6 +269,17 @@ class DestinationWriter:
                 await self._record_skips(session, stream.name, validated.skipped)
                 result.skipped = len(validated.skipped)
             await session.commit()
+            if rows:
+                # After the commit, so it sees exactly what a later reader will.
+                keys = [r["record_key"] for r in rows]
+                result.persisted = await self._count_existing(session, stream.name, keys, model)
+                if self.sync_run_id is not None:
+                    # A row the upsert actually wrote carries this run's id; a row the
+                    # guard left alone keeps its old one. So "updated" is what was really
+                    # rewritten, not merely what was re-submitted.
+                    written = await self._count_written_by_this_run(session, stream.name, keys, model)
+                    result.updated = max(0, written - result.inserted)
+                    result.unchanged = max(0, existing - result.updated)
 
         return result
 
@@ -252,6 +306,11 @@ class DestinationWriter:
         }
         measures = record.measures or {}
         model_cols = {c.name for c in model.__table__.columns} if model else set()
+        # Typed source-specific values (real datetimes/ints) go straight to their
+        # columns; anything that is not a column of this table is dropped below.
+        for key, value in (record.extra or {}).items():
+            if key in model_cols:
+                row[key] = value
         for col in MEASURE_COLUMNS:
             if col in model_cols:
                 row[col] = measures.get(col)
@@ -271,6 +330,21 @@ class DestinationWriter:
         # `reach`, …). Drop any key that is not a real column on this table so
         # the INSERT does not reference a column that does not exist.
         return {k: v for k, v in row.items() if k in model_cols} if model_cols else row
+
+    async def _count_written_by_this_run(self, session, stream: str, keys: list[str], model: Any) -> int:
+        from sqlalchemy import func, select
+
+        stmt = (
+            select(func.count())
+            .select_from(model.__table__)
+            .where(
+                model.connection_id == self.connection_id,
+                model.stream == stream,
+                model.record_key.in_(keys),
+                model.sync_run_id == self.sync_run_id,
+            )
+        )
+        return int((await session.execute(stmt)).scalar_one())
 
     async def _count_existing(self, session, stream: str, keys: list[str], model: Any = None) -> int:
         from sqlalchemy import func, select
