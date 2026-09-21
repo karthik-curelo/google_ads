@@ -212,6 +212,15 @@ class LeadsquaredLead(PerformanceRowMixin, Base):
     source_created_on: Mapped[datetime | None] = mapped_column(TimestampType)
     prospect_stage: Mapped[str | None] = mapped_column(String(120))
     owner_id: Mapped[str | None] = mapped_column(String(64))
+    # CRM-reporting attributes: who owns / is assigned the lead and how the last
+    # call or consultation ended. These are the CURRENT values (LeadSquared keeps
+    # no per-change history on the lead), read straight from `raw`.
+    owner_name: Mapped[str | None] = mapped_column(String(200))  # OwnerIdName
+    assigned_dietician: Mapped[str | None] = mapped_column(String(200))  # mx_Assigned_Dietician
+    disposition: Mapped[str | None] = mapped_column(String(120))  # mx_Disposition
+    diet_consultation_disposition: Mapped[str | None] = mapped_column(String(120))
+    # mx_Diet_Consultation_DateTime
+    diet_consultation_at: Mapped[datetime | None] = mapped_column(TimestampType)
     # Set by the deletion sweep when the lead is confirmed gone at the source.
     # The row is kept (history is preserved); readers that want "live" leads
     # filter `deleted_at IS NULL`. Cleared automatically if the lead reappears.

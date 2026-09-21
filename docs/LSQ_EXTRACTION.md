@@ -117,6 +117,11 @@ production uses this explicit list (leads + 8 activity types, ~46% less storage 
 | `activity_23` | 23 Lead Capture |
 | `activity_97` | 97 Dynamic Form - Submission |
 | `activity_203` | 203 WhatsApp Message |
+| `activity_213` / `activity_214` / `activity_215` / `activity_220` / `activity_222` | 213 Diet Consultation Created / 214 Rescheduled / 215 Cancelled / 220 Completed / 222 Feedback (~1.5k rows a month; added for the dietician report) |
+
+### Dietician / disposition reporting
+
+Owner, assigned dietician and the call/consultation dispositions are lead attributes, so they arrive with the `leads` stream. `leadsquared_leads` exposes them as typed columns (`owner_name`, `assigned_dietician`, `disposition`, `diet_consultation_disposition`, `diet_consultation_at`; migration `e2a9c5b17f03`) and `v_leadsquared_lead_dispositions` adds the lead's dates. They are the **current** values: LeadSquared keeps no per-change history on the lead, so "leads by disposition as they stood on day X" cannot be answered from them; the Diet Consultation activities above give the dated events.
 
 Changing it later is a config change, not a code change: `PATCH /connections/<id>` with the **complete**
 new `streams` list (it replaces the old one), each item `{"stream": "<name>", "sync_mode": "incremental",
