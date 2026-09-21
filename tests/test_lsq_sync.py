@@ -180,6 +180,39 @@ async def test_complete_lead_payload_is_preserved_in_the_warehouse_row(session, 
     assert row.source_modified_on is not None and row.deleted_at is None
 
 
+async def test_crm_reporting_attributes_are_promoted_to_typed_columns(session, org, fake):
+    """The dietician/disposition fields were extracted into `raw` but no reporting tool could
+    address them. They are typed columns now; unset stays NULL and an oversized value can
+    never fail the window's write."""
+    fake.add_lead(
+        "p1",
+        _t(2),
+        OwnerIdName="Priya Nair",
+        mx_Assigned_Dietician="Sunita",
+        mx_Disposition="Callback",
+        mx_Diet_Consultation_Disposition="RNR",
+        mx_Diet_Consultation_DateTime="2026-09-03 06:30:00.000",
+    )
+    fake.add_lead("p2", _t(2))  # nothing set
+    fake.add_lead("p3", _t(2), mx_Diet_Consultation_Disposition="x" * 300, mx_Assigned_Dietician="   ")
+    conn = await _connection(session, org, streams=["leads"])
+    assert (await run_connection(conn.id, trigger="manual")).status == "succeeded"
+
+    rows = {r.prospect_id: r for r in (await session.execute(select(LeadsquaredLead))).scalars()}
+    p1 = rows["p1"]
+    assert (p1.owner_name, p1.assigned_dietician, p1.disposition) == ("Priya Nair", "Sunita", "Callback")
+    assert p1.diet_consultation_disposition == "RNR"
+    assert p1.diet_consultation_at.replace(tzinfo=None) == datetime(2026, 9, 3, 6, 30)
+    assert p1.raw["mx_Diet_Consultation_Disposition"] == "RNR"  # the payload is still complete
+
+    p2 = rows["p2"]
+    assert p2.owner_name is None and p2.assigned_dietician is None and p2.disposition is None
+    assert p2.diet_consultation_disposition is None and p2.diet_consultation_at is None
+
+    p3 = rows["p3"]
+    assert len(p3.diet_consultation_disposition) == 120 and p3.assigned_dietician is None
+
+
 async def test_every_activity_type_lands_in_the_raw_table_with_its_discriminator(session, org, fake):
     for code in ACTIVITY_TYPES:
         fake.add_activity(code, f"act-{code}", _t(2), mx_Custom_1=f"payload-{code}")

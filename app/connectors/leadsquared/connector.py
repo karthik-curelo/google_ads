@@ -250,6 +250,15 @@ def _streams() -> list[StreamDefinition]:
 _ENVELOPE_ATTRIBUTES = frozenset({"Total"})
 
 
+def _clip(value: Any, limit: int) -> str | None:
+    """A text value sized for its column: a value that is too long must never fail the
+    whole window's write. Blank means unset."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:limit] if text else None
+
+
 def lead_attributes(entry: dict[str, Any]) -> dict[str, Any]:
     """`LeadPropertyList` ([{Attribute, Value}, ...]) -> {Attribute: Value}."""
     return {
@@ -568,6 +577,11 @@ class LeadSquaredCRMConnector(LeadSquaredConnector):
                 "source_created_on": created_on,
                 "prospect_stage": d.get("ProspectStage"),
                 "owner_id": d.get("OwnerId"),
+                "owner_name": _clip(d.get("OwnerIdName"), 200),
+                "assigned_dietician": _clip(d.get("mx_Assigned_Dietician"), 200),
+                "disposition": _clip(d.get("mx_Disposition"), 120),
+                "diet_consultation_disposition": _clip(d.get("mx_Diet_Consultation_Disposition"), 120),
+                "diet_consultation_at": _parse_lsq_dt(d.get("mx_Diet_Consultation_DateTime")),
                 "deleted_at": None,
             },
         )
