@@ -31,7 +31,7 @@ from app.core.config import get_settings
 from app.core.database import engine
 from app.core.logging import get_logger, setup_logging
 from app.models import ApiToken, Base, Organization
-from app.sync.preflight import misconfigured_connections, run_preflight
+from app.sync.preflight import misconfigured_connections, run_preflight, schema_drift
 from app.sync.scheduler import SyncScheduler
 
 logger = get_logger(__name__)
@@ -151,6 +151,12 @@ def create_app() -> FastAPI:
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict:
         body: dict = {"status": "ok", "connectors": len(load_connectors())}
+        drift = await schema_drift()
+        if drift is not None:
+            # Code ahead of its own database — every scheduled sync that touches the new
+            # columns/tables will fail until a migration is run, regardless of credentials.
+            body["status"] = "degraded"
+            body["schema_drift"] = drift.reason
         if getattr(app.state, "scheduler", None) is not None:
             problems = await misconfigured_connections()
             if problems:
