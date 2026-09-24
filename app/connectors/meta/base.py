@@ -93,10 +93,25 @@ class MetaConnector(BaseConnector):
         return await self.http.get(url, params=merged)
 
     async def _paged(
-        self, path: str, params: dict[str, Any] | None = None, *, max_pages: int = 1000
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        max_pages: int = 1000,
+        limit: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield each `data[]` item across Graph cursor pages."""
-        params = {**(params or {}), "limit": self.page_size}
+        """Yield each `data[]` item across Graph cursor pages.
+
+        `limit` overrides `self.page_size` for one call — some edges (adcreatives with its
+        `object_story_id`/`effective_object_story_id`/`instagram_permalink_url` fields,
+        which Graph resolves per item) cost far more per row than campaigns/adsets/ads do,
+        and on a large account the flat default page answers "reduce the amount of data
+        you're asking for" (live, `act_1880365855926614`, repeatedly 2026-09-21 to -24) —
+        retried forever as transient by `classify_graph_error`, since Graph reports it as
+        the same generic code as an actual transient error. A smaller page fixes it; the
+        retry alone never does.
+        """
+        params = {**(params or {}), "limit": limit or self.page_size}
         payload = await self._get(path, params)
         pages = 0
         while True:
