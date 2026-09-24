@@ -204,6 +204,37 @@ async def test_meta_paged_follows_next_cursor_and_maps_conversions():
     assert rows[0].key_values["campaign_id"] == "c1"
 
 
+@respx.mock
+async def test_meta_ad_creatives_page_smaller_than_other_entity_edges():
+    """Live finding (act_1880365855926614, 2026-09-21 to -24): the flat page size (200)
+    that works for campaigns/adsets/ads makes Graph answer "reduce the amount of data
+    you're asking for" on `adcreatives`, whose extra fields (object_story_id etc.) cost
+    far more per row — and that error was retried forever as transient, never fixed by
+    the retry itself. A stream-specific smaller page is the actual fix."""
+    base = "https://graph.facebook.com/v26.0"
+    seen: dict[str, str] = {}
+
+    def record(name):
+        def _handler(request):
+            seen[name] = request.url.params.get("limit")
+            return httpx.Response(200, json={"data": []})
+
+        return _handler
+
+    respx.get(url__regex=rf"{base}/act_123/adcreatives.*").mock(side_effect=record("ad_creatives"))
+    respx.get(url__regex=rf"{base}/act_123/campaigns.*").mock(side_effect=record("campaigns"))
+
+    ctx = make_ctx(resource_id="act_123", resource_metadata={"currency": "USD"})
+    conn = MetaAdsConnector(ctx)
+    for name in ("ad_creatives", "campaigns"):
+        stream = conn.get_stream(name)
+        [_ async for _ in conn.read_slice(stream, None)]
+    await conn.aclose()
+
+    assert seen["ad_creatives"] == "25"
+    assert seen["campaigns"] == "200"
+
+
 def test_google_base_classifies_status_strings():
     conn = GoogleAnalyticsConnector(make_ctx())
     resp = httpx.Response(429, json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "slow"}})

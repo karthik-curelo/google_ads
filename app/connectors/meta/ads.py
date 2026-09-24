@@ -195,6 +195,11 @@ _ENTITY_EDGES = {
 }
 
 
+# Per-edge page-size override, applied instead of MetaConnector.page_size (200). Only
+# `adcreatives` needs one today — see `_paged`'s docstring for why.
+_ENTITY_PAGE_SIZE = {"ad_creatives": 25}
+
+
 def _streams() -> list[StreamDefinition]:
     out: list[StreamDefinition] = []
     for name, (level, path, fields) in _ENTITY_EDGES.items():
@@ -335,7 +340,9 @@ class MetaAdsConnector(MetaConnector):
                 node = await self._get(self._act(), {"fields": fields})
                 yield self._entity(stream, spec["level"], node)
                 return
-            async for node in self._paged(f"{self._act()}/{spec['path']}", {"fields": fields}):
+            async for node in self._paged(
+                f"{self._act()}/{spec['path']}", {"fields": fields}, limit=_ENTITY_PAGE_SIZE.get(stream.name)
+            ):
                 yield self._entity(stream, spec["level"], node)
             return
 

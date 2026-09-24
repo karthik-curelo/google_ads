@@ -96,3 +96,15 @@ def test_classify_graph_error_maps_codes():
         == E.ErrorCode.RATE_LIMIT_ERROR
     )
     assert classify_graph_error({}, 400) is None
+
+
+def test_classify_graph_error_treats_the_per_ad_account_rate_limit_as_retryable():
+    """Live (act_1219296233241927, 2026-09-24): "There have been too many calls to this
+    ad-account. Wait a bit and try again." (code 80004) is Meta's per-AD-ACCOUNT throttle,
+    distinct from the app-wide codes (4/17/32/613). Unclassified, it fell through to a
+    generic HTTP-400 handler as invalid_configuration (retryable=False), which failed the
+    stream outright — with two ad accounts syncing back to back, it is not rare."""
+    err = classify_graph_error(
+        {"error": {"code": 80004, "message": "There have been too many calls to this ad-account."}}, 400
+    )
+    assert err is not None and err.code == E.ErrorCode.RATE_LIMIT_ERROR and err.retryable

@@ -5,9 +5,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+from sqlalchemy import text
+
 from app.core.config import get_settings
 from app.models import Connection, OAuthIdentity
-from app.sync.preflight import misconfigured_connections, run_preflight
+from app.sync import preflight
+from app.sync.preflight import misconfigured_connections, run_preflight, schema_drift
 
 
 async def _lsq_connection(session, org, *, enabled=True) -> Connection:
@@ -114,6 +118,73 @@ async def test_healthz_reports_degraded_with_the_reason_when_a_scheduled_connect
     assert bad["status"] == "degraded"
     (entry,) = bad["misconfigured"]
     assert entry["connection_id"] == conn.id and "LEADSQUARED_ACCESS_KEY" in entry["reason"]
+
+
+async def test_schema_drift_is_none_on_a_fresh_database(session):
+    """The normal test/dev state: schema built by `create_all`, no `alembic_version` table
+    at all. That is "can't tell", never treated as drift."""
+    assert await schema_drift() is None
+
+
+@pytest.fixture
+async def alembic_version_table(session):
+    """A raw `alembic_version` table, isolated from other tests: DDL + the seeded row are
+    committed outside the per-test transaction (SQLite auto-commits DDL), so it is dropped
+    explicitly on teardown rather than relying on rollback."""
+
+    async def seed(revision: str) -> None:
+        await session.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        await session.execute(text("INSERT INTO alembic_version (version_num) VALUES (:v)"), {"v": revision})
+        await session.commit()
+
+    yield seed
+    await session.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    await session.commit()
+
+
+async def test_schema_drift_reports_when_the_database_is_behind_the_code(
+    session, monkeypatch, caplog, alembic_version_table
+):
+    """The 2026-09-23 incident: code (and its migration file) shipped, the migration was
+    never run — every scheduled write of a new column then fails, quietly, forever."""
+    monkeypatch.setattr(preflight, "_code_head_revisions", lambda: {"e2a9c5b17f03"})
+    await alembic_version_table("b7c3d91e4a52")
+
+    drift = await schema_drift()
+    assert drift is not None
+    assert "b7c3d91e4a52" in drift.reason and "e2a9c5b17f03" in drift.reason
+
+    with caplog.at_level("ERROR"):
+        await run_preflight()
+    assert any("PREFLIGHT" in r.message and "e2a9c5b17f03" in r.message for r in caplog.records)
+
+
+async def test_schema_drift_is_none_when_the_database_matches_the_code(
+    session, monkeypatch, alembic_version_table
+):
+    monkeypatch.setattr(preflight, "_code_head_revisions", lambda: {"e2a9c5b17f03"})
+    await alembic_version_table("e2a9c5b17f03")
+    assert await schema_drift() is None
+
+
+async def test_healthz_reports_schema_drift_even_in_a_process_that_does_not_schedule(
+    session, monkeypatch, alembic_version_table
+):
+    """Schema drift breaks any process that touches the affected rows, not only scheduled
+    syncs, so it is reported unconditionally rather than gated on `app.state.scheduler`."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    monkeypatch.setattr(preflight, "_code_head_revisions", lambda: {"e2a9c5b17f03"})
+    await alembic_version_table("b7c3d91e4a52")
+    app = create_app()
+    app.state.scheduler = None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        body = (await client.get("/healthz")).json()
+
+    assert body["status"] == "degraded"
+    assert "e2a9c5b17f03" in body["schema_drift"]
 
 
 async def test_healthz_stays_ok_in_a_process_that_does_not_schedule(session, org, monkeypatch):
