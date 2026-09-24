@@ -39,7 +39,12 @@ SCOPE_INSTAGRAM_MANAGE_INSIGHTS = "instagram_manage_insights"
 # Meta error codes that mean "the user must act", not "try again".
 _AUTH_ERROR_CODES = {102, 190, 458, 459, 460, 463, 464, 467}
 _PERMISSION_ERROR_CODES = {10, 200, 272, 294, 299}
-_RATE_LIMIT_CODES = {4, 17, 32, 613}
+# 4/17/32/613 throttle the whole app; 80004 is per AD ACCOUNT ("There have been too many
+# calls to this ad-account. Wait a bit and try again.") — live, two ad accounts syncing
+# back to back (2026-09-24). Unclassified, it fell through to the generic HTTP-400
+# handler as invalid_configuration (retryable=False, "correct this connection's
+# configuration"), which failed the stream outright instead of retrying with backoff.
+_RATE_LIMIT_CODES = {4, 17, 32, 613, 80004}
 _TRANSIENT_CODES = {1, 2}
 
 
